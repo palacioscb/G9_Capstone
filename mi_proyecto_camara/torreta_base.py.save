@@ -1,0 +1,81 @@
+import time
+import cv2
+import numpy as np
+from picamera2 import Picamera2
+
+# 1. PARÁMETROS DE CONFIGURACIÓN
+WIDTH, HEIGHT = 1280, 960
+CENTER_X, CENTER_Y = WIDTH // 2, HEIGHT // 2
+UMBRAL_BRILLO = 220  # Ajustar entre 0 y 255 segun la intensidad del láser/luz
+
+# 2. INICIALIZAR PICAMERA2 CON RESOLUCIÓN RÁPIDA
+picam2 = Picamera2()
+config = picam2.create_preview_configuration(
+    main={"size": (WIDTH, HEIGHT), "format": "RGB888"}
+)
+picam2.configure(config)
+picam2.start()
+
+print(f"[OK] Cámara iniciada a {WIDTH}x{HEIGHT}. Centro objetivo: ({CENTER_X}, {CENTER_Y})")
+print("Presiona 'q' en la ventana para salir.")
+
+prev_time = time.perf_counter()
+# 1. Crear una ventana redimensionable
+cv2.namedWindow("Torreta - Control de Vision", cv2.WINDOW_NORMAL)
+
+# 2. Ajustar el tamaño visible en la pantalla HDMI (ej. 800x600 o 1280x960)
+cv2.resizeWindow("Torreta - Control de Vision", )
+try:
+    while True:
+        # A. Captura directa a NumPy Array
+        frame = picam2.capture_array()
+        
+        # B. Conversión rápida a BGR para OpenCV
+        bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+        # C. PROCESAMIENTO MÍNIMO (Detección de Punto Brillante / Láser)
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        gray_blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        
+        # Encontrar el píxel con el valor máximo de brillo
+        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(gray_blurred)
+
+        # D. LÓGICA DE DETECCIÓN Y CÁLCULO DE ERROR
+        if max_val >= UMBRAL_BRILLO:
+            target_x, target_y = max_loc
+
+            # CÁLCULO DEL ERROR (Vector para el control de los motores)
+            # error < 0: el objetivo está a la izquierda/arriba del centro
+            # error > 0: el objetivo está a la derecha/abajo del centro
+            error_x = target_x - CENTER_X
+            error_y = target_y - CENTER_Y
+
+            # Visualización
+            cv2.circle(bgr, (target_x, target_y), 6, (0, 0, 255), -1)  # Punto rojo
+            cv2.line(bgr, (CENTER_X, CENTER_Y), (target_x, target_y), (0, 255, 0), 2)
+            
+            estado_str = f"Rastreando | Error X: {error_x}px, Y: {error_y}px"
+        else:
+            error_x, error_y = 0, 0
+            estado_str = "OBJETIVO PERDIDO / TAPA"
+            cv2.putText(bgr, estado_str, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+
+        # Dibujar cruz fija en el centro exacto del encuadre
+        cv2.drawMarker(bgr, (CENTER_X, CENTER_Y), (255, 0, 0), cv2.MARKER_CROSS, 15, 2)
+
+        # E. CÁLCULO DE FPS (Medición de Rendimiento)
+        curr_time = time.perf_counter()
+        fps = 1.0 / (curr_time - prev_time)
+        prev_time = curr_time
+        
+        cv2.putText(bgr, f"FPS: {fps:.1f}", (10, HEIGHT - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+
+        # F. MOSTRAR PREVIEW
+        cv2.imshow("Torreta - Control de Vision", bgr)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+finally:
+    picam2.stop()
+    cv2.destroyAllWindows()

@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""
+Torreta - versión de mínima latencia (Raspberry Pi + Picamera2)
+
+Qué cambia respecto a la versión inicial:
+  * La cámara entrega YUV420 directo desde el ISP: el plano Y ES la imagen en grises.
+    Se eliminan capture_array en RGB, cvtColor RGB->BGR y BGR->GRAY (3 pasadas por frame).
+  * Acceso sin copia al buffer de la cámara (MappedArray) y se libera lo antes posible.
+  * queue=False: siempre se procesa un frame NUEVO, nunca uno viejo encolado.
+  * Exposición/ganancia fijas y cortas, sin AE/AWB ni reducción de ruido (menos trabajo
+    del ISP, frames más rápidos y el punto brillante destaca más).
+  * Detección propia (solo numpy) de la ZONA más luminosa:
+        1) salida rápida si nada supera el umbral,
+        2) suma por bloques -> bloque más brillante (inmune a un píxel caliente),
+        3) centroide ponderado subpíxel alrededor de ese bloque.
+    Una vez enganchado el objetivo, solo se busca en una ventana (ROI) alrededor de la
+    última posición: el costo deja de depender de la resolución.
+  * La ventana HDMI es opcional y se refresca solo cada N frames, fuera de la ruta crítica.
+  * Métrica de latencia real: desde el timestamp del sensor hasta que el dato está listo
+    para el controlador.
+
+Uso:
+    python3 torreta_rapida.py                # con ventana
+    python3 torreta_rapida.py --sin-ventana  # solo terminal (mide lo más puro)
+"""
+import argparse
+import gc
+import os
+import time
+from datetime import datetime
+
+import numpy as np
+
+# ----------------------------- PARÁMETROS -----------------------------
+W, H = 640, 480            # resolución de trabajo (múltiplo de 32 en ancho evita padding)
+FPS_OBJETIVO = 120         # el sensor lo limita si no llega
+EXPOSICION_US = 2000       # exposición fija corta (ajustar a tu iluminación)
+GANANCIA = 2.0             # ganancia analógica fija
+UMBRAL_BRILLO = 220        # pico mínimo (0-255) para considerar que hay objetivo
+MIN_PIX = 3                # píxeles mínimos de la zona brillante (descarta píxeles calientes)
+B_GLOBAL = 8               # tamaño de bloque en búsqueda global
+B_ROI = 4                  # tamaño de bloque dentro de la ROI
+ROI_R = 48                 # radio de la ventana de seguimiento (px)
+MOSTRAR_CADA = 4           # refrescar ventana cada N frames
+DIR_CAPTURAS = "capturas"
+
+RELOJ = getattr(time, "CLOCK_BOOTTIME", time.CLOCK_MONOTONIC)
+_IDX = np.arange(max(W, H) + 8, dtype=np.int64)
+
+
+# ----------------------------- DETECCIÓN -----------------------------
+def centroide_local(y, cx, cy, r, umbral=UMBRAL_BRILLO, min_pix=MIN_PIX):
+    """Centroide ponderado (subpíxel) de la zona brillante alrededor de (cx, cy)."""
+    h, w = y.shape
+    x0, x1 = max(cx - r, 0), min(cx + r, w)
+    y0, y1 = max(cy - r, 0), min(cy + r, h)
+    v = y[y0:y1, x0:x1]
+    pico = int(v.max())
+    if pico < umbral:
+        return None
+    p = v.astype(np.int16) - (pico * 7) // 10   # pesos: solo lo cercano al pico
+    np.maximum(p, 0, out=p)
+    if int(np.count_nonzero(p)) < min_pix:
+        return None
+    s = int(p.sum())
+    mx = x0 + int(p.sum(axis=0) @ _IDX[: x1 - x0]) / s
+    my = y0 + int(p.sum(axis=1) @ _IDX[: y1 - y0]) / s
+    return mx, my, pico
+
+
+def buscar_zona(y, b, umbral=UMBRAL_BRILLO):
+    """Encuentra la zona (bloque b x b) más luminosa y refina con centroide."""
+    if int(y.max()) < umbral:            # salida rápida: no hay nada que buscar
+        return None
+    h, w = y.shape
+    hb, wb = h // b, w // b
+    suma = y[: hb * b, : wb * b].reshape(hb, b, wb, b).sum(axis=(1, 3), dtype=np.uint16)
+    by, bx = divmod(int(suma.argmax()), wb)
+    return centroide_local(y, bx * b + b // 2, by * b + b // 2, (3 * b) // 2, umbral)
+
+
+class Detector:
+    """Búsqueda global al inicio / al perder el objetivo; ROI cuando está enganchado."""
+
+    def __init__(self):
+        self.ultimo = None  # (x, y) entero de la última detección
+
+    def detectar(self, y):
+        h, w = y.shape
+        if self.ultimo is not None:
+            ux, uy = self.ultimo
+            x0, x1 = max(ux - ROI_R, 0), min(ux + ROI_R, w)
+            y0, y1 = max(uy - ROI_R, 0), min(uy + ROI_R, h)
+            res = buscar_zona(y[y0:y1, x0:x1], B_ROI)
+            if res is not None:
+                mx, my, pico = res
+                mx += x0
+                my += y0
+                self.ultimo = (int(mx), int(my))
+                return mx, my, pico
+        res = buscar_zona(y, B_GLOBAL)
+        self.ultimo = None if res is None else (int(res[0]), int(res[1]))
+        return res
+
+
+# ----------------------------- CONTROLADOR -----------------------------
+def enviar_al_controlador(ex, ey):
+    """Punto de salida del error hacia el controlador.
+    Reemplazar por tu canal real. Ejemplo por serial (pyserial, abrir el puerto una sola vez):
+        ser.write(struct.pack('<ff', ex, ey))
+    Se mide su duración, así que queda incluido en la latencia total.
+    """
+    return
+
+
+# ----------------------------- UTILIDADES -----------------------------
+class Metrica:
+    """Promedio móvil exponencial + máximo de la ventana de 1 s."""
+
+    def __init__(self, alpha=0.05):
+        self.a, self.v, self.max, self._max = alpha, None, 0.0, 0.0
+
+    def add(self, x):
+        self.v = x if self.v is None else self.v + self.a * (x - self.v)
+        self._max = max(self._max, x)
+
+    def cerrar_ventana(self):
+        self.max, self._max = self._max, 0.0
+
+
+def dibujar(cv2, gris, res, m, fps):
+    img = cv2.cvtColor(gris, cv2.COLOR_GRAY2BGR)
+    cx, cy = W // 2, H // 2
+    cv2.drawMarker(img, (cx, cy), (255, 0, 0), cv2.MARKER_CROSS, 25, 2)
+    if res is not None:
+        tx, ty = int(res[0]), int(res[1])
+        cv2.circle(img, (tx, ty), 12, (0, 255, 0), 2)
+        cv2.line(img, (cx, cy), (tx, ty), (0, 255, 255), 2)
+        estado = f"dX:{res[0]-cx:+.1f} dY:{res[1]-cy:+.1f}"
+    else:
+        estado = "Buscando objetivo..."
+    f = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(img, f"FPS: {fps:.0f}   {estado}", (10, 25), f, 0.6, (0, 255, 0), 2)
+    cv2.putText(img, f"Captura {m['cap'].v:.2f} | Deteccion {m['det'].v:.3f} | Envio {m['env'].v:.3f} ms",
+                (10, 50), f, 0.55, (0, 255, 255), 1)
+    cv2.putText(img, f"TOTAL sensor->controlador: {m['tot'].v:.2f} ms (max 1s: {m['tot'].max:.2f})",
+                (10, 75), f, 0.6, (0, 200, 255), 2)
+    cv2.putText(img, "[S] Foto | [Q] Salir", (10, H - 12), f, 0.5, (255, 255, 255), 1)
+    return img
+
+
+# ----------------------------- PRINCIPAL -----------------------------
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--sin-ventana", action="store_true", help="no abrir ventana HDMI")
+    args = ap.parse_args()
+
+    from picamera2 import Picamera2, MappedArray
+    from libcamera import controls as lc
+
+    cv2 = None
+    if not args.sin_ventana:
+        import cv2 as _cv2
+        cv2 = _cv2
+        cv2.namedWindow("Torreta - Rapida", cv2.WINDOW_NORMAL)
+        os.makedirs(DIR_CAPTURAS, exist_ok=True)
+
+    dur_us = int(1e6 / FPS_OBJETIVO)
+    picam2 = Picamera2()
+    cfg = picam2.create_video_configuration(
+        main={"size": (W, H), "format": "YUV420"},
+        buffer_count=3,
+        queue=False,  # siempre un frame nuevo; probar queue=True si el sensor va más rápido que el loop
+        controls={
+            "AeEnable": False,
+            "AwbEnable": False,
+            "ExposureTime": EXPOSICION_US,
+            "AnalogueGain": GANANCIA,
+            "FrameDurationLimits": (dur_us, dur_us),
+            "NoiseReductionMode": lc.draft.NoiseReductionModeEnum.Off,
+        },
+    )
+    picam2.configure(cfg)
+    picam2.start()
+    print("Modo de sensor:", picam2.camera_configuration()["sensor"])
+
+    try:  # opcional: fijar el proceso a un núcleo (reduce jitter)
+        os.sched_setaffinity(0, {os.cpu_count() - 1})
+    except Exception:
+        pass
+
+    det = Detector()
+    m = {k: Metrica() for k in ("cap", "det", "env", "tot")}
+    fps, t_prev = 0.0, time.perf_counter()
+    t_win, n, fotos = t_prev, 0, 0
+    ts_avisado = False
+
+    gc.collect()
+    gc.disable()  # evita pausas del recolector en el loop crítico
+    print("Corriendo. Ctrl+C o 'q' para salir." if cv2 else "Corriendo sin ventana. Ctrl+C para salir.")
+
+    try:
+        while True:
+            req = picam2.capture_request()
+            t_cap = time.clock_gettime_ns(RELOJ)
+            ts = req.get_metadata().get("SensorTimestamp")
+            mostrar = cv2 is not None and (n % MOSTRAR_CADA == 0)
+            with MappedArray(req, "main") as ma:
+                y = ma.array[:H, :W]                    # plano Y, sin copia
+
+                t0 = time.perf_counter_ns()
+                res = det.detectar(y)
+                t1 = time.perf_counter_ns()
+                if res is not None:
+                    enviar_al_controlador(res[0] - W / 2, res[1] - H / 2)
+                t2 = time.perf_counter_ns()
+                t_fin = time.clock_gettime_ns(RELOJ)    # dato listo para el controlador
+
+                gris = y.copy() if mostrar else None
+            req.release()
+
+            # --- métricas (ms) ---
+            m["det"].add((t1 - t0) / 1e6)
+            m["env"].add((t2 - t1) / 1e6)
+            if ts:
+                cap, tot = (t_cap - ts) / 1e6, (t_fin - ts) / 1e6
+                if not ts_avisado and not (0 <= tot < 500):
+                    print("AVISO: SensorTimestamp no es comparable con el reloj usado; "
+                          "probar RELOJ = time.CLOCK_MONOTONIC.")
+                    ts_avisado = True
+            else:  # sin timestamp: solo costo de procesamiento propio
+                cap, tot = 0.0, (t_fin - t_cap) / 1e6
+            m["cap"].add(cap)
+            m["tot"].add(tot)
+
+            n += 1
+            ahora = time.perf_counter()
+            fps = 0.95 * fps + 0.05 / (ahora - t_prev) if fps else 1.0 / (ahora - t_prev)
+            t_prev = ahora
+            if ahora - t_win >= 1.0:
+                for mm in m.values():
+                    mm.cerrar_ventana()
+                t_win = ahora
+                pos = "sin objetivo" if res is None else f"dX={res[0]-W/2:+.1f} dY={res[1]-H/2:+.1f}"
+                print(f"FPS {fps:5.1f} | captura {m['cap'].v:5.2f} | deteccion {m['det'].v:6.3f} | "
+                      f"envio {m['env'].v:5.3f} | TOTAL {m['tot'].v:5.2f} ms (max {m['tot'].max:5.2f}) | {pos}")
+
+            # --- ventana (fuera de la ruta crítica) ---
+            if mostrar:
+                img = dibujar(cv2, gris, res, m, fps)
+                cv2.imshow("Torreta - Rapida", img)
+                k = cv2.waitKey(1) & 0xFF
+                if k == ord("q"):
+                    break
+                if k == ord("s"):
+                    fotos += 1
+                    fn = os.path.join(DIR_CAPTURAS, f"rapida_{fotos}_{datetime.now():%Y%m%d_%H%M%S}.jpg")
+                    cv2.imwrite(fn, img)
+                    print(f"[FOTO {fotos}] {fn}")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        picam2.stop()
+        if cv2:
+            cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()
