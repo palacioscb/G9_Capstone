@@ -15,55 +15,55 @@
 //* ============================================================================
 
 // ============================================================================
-//* PINES — ESP32 DevKit (WROOM-32), agrupados por lado de la placa
+//* PINES — ESP32 DevKit (WROOM-32) sobre la placa de expansión (cada GPIO con S, V, G)
 // ============================================================================
-//  Lado IZQUIERDO (de arriba hacia abajo): fallas de ambos drivers, micropasos compartidos
-//  y el eje PAN. Es el mismo cableado del eje de la prueba de concepto (poc_drv8825).
+//* Cableado REAL del laboratorio (22-10-2026). "S" = señal del GPIO, "V" y "G" = alimentación
+//* y tierra de la misma fila de la placa de expansión.
 //
-//    GPIO34  <- nFAULT pan        (sólo entrada: pull-up EXTERNO 10 kΩ a 3V3)
-//    GPIO35  <- nFAULT tilt       (sólo entrada: pull-up EXTERNO 10 kΩ a 3V3)
-//    GPIO32  -> M0  (ambos drivers)
-//    GPIO33  -> M1  (ambos drivers)
-//    GPIO25  -> STEP pan
-//    GPIO26  -> DIR  pan
-//    GPIO27  -> nENABLE pan       (pull-up EXTERNO 4,7 kΩ a 3V3)
-//    GPIO14  -> M2  (ambos drivers)
-//    GPIO13  <- final de carrera pan  (los 2 topes NC en serie a GND; pull-up interno)
+//    Eje      Función             GPIO   Canal
+//    -------  ------------------  -----  -----
+//    pan      nENABLE  DRV8825     13     S
+//    (azimut) STEP                 12     S     //! GPIO12 es pin de arranque (MTDI): ver abajo
+//             DIR                  14     S
+//    tilt     nENABLE  DRV8825     27     S
+//    (elev.)  STEP                 26     S
+//             DIR                  25     S
+//    pan      AS5600 SDA           21     S     bus I2C 0 ("Wire")
+//             AS5600 SCL           22     S
+//             AS5600 VCC           (23)   V     sólo alimentación desde la fila V del GPIO23
+//    tilt     AS5600 SDA           18     S     bus I2C 1 ("Wire1")
+//             AS5600 SCL           19     S
+//             AS5600 VCC           (5)    V     sólo alimentación desde la fila V del GPIO5
+//    enlace   RX0 <- TX de la RPi  3      S     pin 8 del header de la RPi (GPIO14, TXD)
+//             TX0 -> RX de la RPi  1      S     pin 10 del header de la RPi (GPIO15, RXD)
+//             GND común            (23)   G     debe ir a un pin GND de la RPi (6, 9, 14...)
 //
-//  Lado DERECHO (de arriba hacia abajo): fin de carrera, sensores y eje TILT.
-//
-//    GPIO23  <- final de carrera tilt (los 2 topes NC en serie a GND; pull-up interno)
-//    GPIO22  -> SCL AS5600 pan    (bus I2C 0, "Wire")
-//    GPIO21  <> SDA AS5600 pan
-//    GPIO19  -> SCL AS5600 tilt   (bus I2C 1, "Wire1")
-//    GPIO18  <> SDA AS5600 tilt
-//    GPIO17  -> STEP tilt
-//    GPIO16  -> DIR  tilt
-//    GPIO4   -> nENABLE tilt      (pull-up EXTERNO 4,7 kΩ a 3V3)
-//
-//  Libres y reservados: GPIO36 y GPIO39 (lectura ADC de los shunt, futuro).
-//
-//! No usar GPIO 0, 2, 5, 12 ni 15 (pines de arranque) ni 6–11 (memoria flash).
-//! GPIO4 tiene pull-DOWN interno durante el reinicio: sin el pull-up externo de 4,7 kΩ
-//! el driver de tilt queda HABILITADO mientras el ESP32 arranca. Lo mismo vale para
-//! GPIO27, que queda flotando. El pull-up es obligatorio en ambos nENABLE.
-//! GPIO16/17 sirven en módulos WROOM. En un WROVER están ocupados por la PSRAM.
-//* Cada AS5600 va en su propio bus I2C. Tienen dirección fija (0x36), así que con dos
-//* buses no hace falta multiplexor y un sensor caído no bloquea al otro.
-//? Los módulos AS5600 traen pull-ups de I2C propios. Si el bus falla con cables largos,
-//? agregar 4,7 kΩ a 3V3 en SDA y SCL. Alimentar el AS5600 con 3V3, no con 5 V.
-//* Finales de carrera: los DOS topes de cada eje van en SERIE, contactos NC (normalmente
-//* cerrados), entre el GPIO y GND. En reposo el pin lee LOW. Si cualquiera de los dos topes
-//* se abre, o si se corta un cable, lee HIGH = tope activado. Esto es a prueba de fallas:
-//* un cable suelto detiene el eje en vez de ocultar un choque. Qué tope se tocó se sabe por θ_med.
-//todo El corte de nENABLE por hardware desde los topes (EA-5) queda para la PCB. Por ahora,
-//todo sólo lectura por software (reacción en ≤ FIN_ANTIRREBOTE_MS + 1 ms).
+//* Sin cablear por ahora: nFAULT, finales de carrera y M0/M1/M2 (micropasos). Por eso
+//* USAR_PIN_FAULT = false, USAR_FINES_CARRERA = false y USAR_PINES_MICROPASO = false.
+//! Los micropasos los fija el HARDWARE del driver (pines M0..M2 o interruptores de la base).
+//! El firmware tiene que saber cuál es: comando 'm' de la consola (queda guardado en la
+//! memoria del ESP32) y la prueba 't' lo estima. Con M0..M2 sueltos el DRV8825 trabaja en
+//! paso completo (1/1). Para 1/16 basta llevar M2 a 3V3 y dejar M0 y M1 a GND o sueltos.
+//! GPIO12 (STEP pan): si está en ALTO al arrancar, el ESP32 elige flash a 1,8 V y no arranca.
+//! El STEP del DRV8825 tiene pull-down interno, así que funciona; no agregar pull-up ahí.
+//! Las filas V de la placa de expansión pueden ser 5 V o 3,3 V (puente en la placa). El
+//! AS5600 debe ir a 3,3 V: con 5 V, los pull-ups del módulo llevan SDA/SCL a 5 V y el ESP32
+//! no los tolera. Medir V–G con el multímetro antes de conectar.
+//! nENABLE sin pull-up externo: mientras el ESP32 arranca, el pin flota y el DRV8825 (pull-down
+//! interno en nENABLE) queda HABILITADO con corriente de retención, sin pasos. No se mueve,
+//! pero calienta. Se deshabilita en cuanto corre setup().
+//* Cada AS5600 va en su propio bus I2C (dirección fija 0x36): sin multiplexor.
+//* Libres: GPIO16 (RX2) y GPIO17 (TX2). Si el enlace por RX0/TX0 da problemas (ver ENLACE más
+//* abajo), mover los dos cables de la RPi a GPIO16/17: el firmware escucha en ambos.
 
-constexpr uint8_t PIN_M0 = 32;
-constexpr uint8_t PIN_M1 = 33;
-constexpr uint8_t PIN_M2 = 14;
+constexpr uint8_t PIN_NC = 255;                // "no conectado"
 
-constexpr bool    USAR_FINES_CARRERA = true;   //! false sólo si los topes no están cableados
+constexpr bool    USAR_PINES_MICROPASO = false;  // M0..M2 no van al ESP32
+constexpr uint8_t PIN_M0 = PIN_NC;
+constexpr uint8_t PIN_M1 = PIN_NC;
+constexpr uint8_t PIN_M2 = PIN_NC;
+
+constexpr bool    USAR_FINES_CARRERA = false;  //! topes no cableados todavía
 constexpr bool    FIN_CONTACTO_NC    = true;   // NC en serie: activo = pin en ALTO
 constexpr uint8_t FIN_ANTIRREBOTE_MS = 3;      // lecturas seguidas (a 1 kHz) para aceptar el tope
 
@@ -71,8 +71,12 @@ constexpr uint8_t FIN_ANTIRREBOTE_MS = 3;      // lecturas seguidas (a 1 kHz) pa
 //* MECÁNICA Y ACCIONAMIENTO
 // ============================================================================
 constexpr float   PASO_COMPLETO_DEG = 1.8f;   // motor de 200 pasos/vuelta
-constexpr uint8_t MICROPASOS        = 16;     // 1/16 -> 0,1125 °/micropaso en el motor
-constexpr float   GRADOS_POR_MICROPASO = PASO_COMPLETO_DEG / MICROPASOS;
+//* Micropasos que tiene configurados el DRV8825 (1, 2, 4, 8, 16 o 32). Es un valor de
+//* ARRANQUE: el comando 'm <N>' lo cambia y lo guarda en la memoria no volátil del ESP32.
+//! Por defecto 1 (paso completo), que es lo que hace el DRV8825 con M0..M2 sueltos. Además es
+//! lo seguro si no se sabe: si el driver estuviera en 1/16, el eje se movería 16 veces MENOS
+//! de lo pedido. Al revés (firmware en 16 y driver en 1/1) se movería 16 veces MÁS.
+constexpr uint8_t MICROPASOS_POR_DEFECTO = 1;
 
 //* Generador de pulsos: un solo temporizador de hardware a F_TICK para ambos ejes.
 //* Cada tic, un acumulador de fase por eje decide si corresponde emitir un micropaso
@@ -128,12 +132,13 @@ struct ConfigEje {
 //? muestre oscilación a la frecuencia de resonancia (~22 Hz en pan).
 //todo Medir el recorrido mecánico libre de cada eje y ajustar limMinDeg / limMaxDeg.
 //todo Los límites por software deben quedar ANTES de los topes físicos (≥ MARGEN_LIMITE_DEG).
-//todo Tras la prueba 't' de la consola, corregir signoMotor y signoSensor si hace falta.
-//todo Tras centrar la plataforma, fijar ceroRaw con el valor que imprime el comando 'z'.
+//* signoMotor, signoSensor y ceroRaw son valores de ARRANQUE: los comandos 'i' y 'z' de la
+//* consola los corrigen y los guardan en la memoria del ESP32 (no hace falta recompilar).
+//todo Cuando estén medidos, copiarlos aquí también (los imprime 'p'), para no depender de la memoria.
 constexpr ConfigEje EJES[2] = {
   //   nombre  STEP DIR EN FAULT FIN  SDA SCL bus  sgnM sgnS  rel   cero   limMin  limMax   Kp    Ki
-  {   "pan",    25, 26, 27,  34,  13,  21, 22,  0,   +1,  +1, 1.0f,   -1,  -60.0f, +60.0f, 3.0f,  2.25f },
-  {   "tilt",   17, 16,  4,  35,  23,  18, 19,  1,   +1,  +1, 1.0f,   -1,  -30.0f, +30.0f, 10.0f, 25.0f },
+  {   "pan",    12, 14, 13, PIN_NC, PIN_NC, 21, 22, 0, +1,  +1, 1.0f,   -1,  -60.0f, +60.0f, 3.0f,  2.25f },
+  {   "tilt",   26, 25, 27, PIN_NC, PIN_NC, 18, 19, 1, +1,  +1, 1.0f,   -1,  -30.0f, +30.0f, 10.0f, 25.0f },
 };
 constexpr uint8_t EJE_PAN  = 0;
 constexpr uint8_t EJE_TILT = 1;
@@ -158,9 +163,11 @@ constexpr uint32_t RETARDO_FILTRO_AS5600_US = 275;   // ≈ mitad del asentamien
 // ============================================================================
 //* SUPERVISIÓN LOCAL (CS-9)
 // ============================================================================
-constexpr bool  USAR_PIN_FAULT       = true;    //! poner false si nFAULT no está cableado (evita fallas falsas)
+constexpr bool  USAR_PIN_FAULT       = false;   //! nFAULT no cableado: si se cablea, poner true y su GPIO en EJES
 constexpr float MARGEN_LIMITE_DEG    = 5.0f;    // θ_med fuera de [lím − margen, lím + margen] -> falla
 constexpr float UMBRAL_PERDIDA_DEG   = 2.0f;    // |θ_pasos − θ_med| > umbral -> pérdida de pasos (ACT-5)
+//* Con pasos gruesos (1/1 = 1,8°) el umbral efectivo sube a 2,5 pasos para no dar fallas falsas.
+constexpr float UMBRAL_PERDIDA_PASOS = 2.5f;
 constexpr uint32_t RESINCRONIA_HABILITAR_MS = 200;  // tras habilitar, el rotor se asienta: no evaluar pérdida
 //? Con un signo mal configurado el PI realimenta positivo; el detector de pérdida de pasos
 //? lo corta en cuanto la diferencia supera el umbral.
@@ -168,6 +175,17 @@ constexpr uint32_t RESINCRONIA_HABILITAR_MS = 200;  // tras habilitar, el rotor 
 // ============================================================================
 //* ENLACE CON LA RASPBERRY PI (CS-4)
 // ============================================================================
+//* El firmware escucha tramas en DOS UART y responde por el que recibió la última trama válida:
+//*   - UART0 (RX0 = GPIO3, TX0 = GPIO1): el cableado actual a la RPi. Es el MISMO UART del
+//*     USB, así que la consola por USB y la RPi comparten la línea.
+//*   - UART2 (RX2 = GPIO16, TX2 = GPIO17): alternativa recomendada. Deja el USB libre para la
+//*     consola y para cargar firmware con la RPi conectada.
+//! Con la RPi en RX0/TX0, NO conectar el USB del ESP32 a un PC o a la RPi mientras corre el
+//! lazo: el chip USB-serie también maneja RX0 y choca con el TX de la RPi. Alimentar el ESP32
+//! por la placa de expansión (DC o 5V). Para cargar firmware por USB, desconectar el cable RX0.
+constexpr bool    ESCUCHAR_UART2 = true;
+constexpr uint8_t PIN_RX2 = 16;
+constexpr uint8_t PIN_TX2 = 17;
 constexpr uint32_t BAUDIOS              = 921600;
 constexpr uint32_t WATCHDOG_ENLACE_MS   = 100;    // sin consigna -> RETENCIÓN (diagrama CS-3/CS-4)
 constexpr uint32_t DESHABILITAR_SIN_ENLACE_MS = 5000;  // retención por watchdog más larga -> DESHABILITADO

@@ -7,8 +7,8 @@ recibir la línea de respuesta. NO habilita el driver ni mueve el motor.
 
 Uso (en la RPi, con el ESP32 conectado por USB):
     ls /dev/serial/by-id/                         # identificar el puerto
-    python3 herramientas/prueba_enlace.py --puerto /dev/ttyUSB0 -n 200                   # esp32_pan_tilt (921 600)
-    python3 herramientas/prueba_enlace.py --puerto /dev/ttyUSB0 --baudios 115200 -n 200  # firmware PoC
+    python3 herramientas/prueba_enlace.py --puerto /dev/ttyAMA0 -n 200                   # esp32_pan_tilt (921 600)
+    python3 herramientas/prueba_enlace.py --puerto /dev/ttyAMA0 --baudios 115200 -n 200  # firmware PoC
 
 Salida: RTT mediana / p95 / máx [ms], respuestas perdidas, y CSV por muestra.
 """
@@ -23,7 +23,7 @@ import serial
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--puerto", default="/dev/ttyUSB0")
+    ap.add_argument("--puerto", default="/dev/ttyAMA0", help="UART del header (pines 8 y 10); por USB: /dev/ttyUSB0")
     ap.add_argument("--baudios", type=int, default=921600)
     ap.add_argument("-n", type=int, default=200)
     ap.add_argument("--comando", default="p", help="comando que responde una línea")

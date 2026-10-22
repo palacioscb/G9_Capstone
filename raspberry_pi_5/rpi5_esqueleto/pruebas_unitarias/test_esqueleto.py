@@ -316,6 +316,31 @@ def test_frenado_evita_sobrepaso_grande():
 
 
 
+def test_detector_luz_flash_grande_y_pixel_caliente():
+    """DetectorLuz (de luz_2.py): mancha saturada de 22 px de diámetro + un píxel caliente."""
+    from pt.deteccion import DetectorLuz
+    from pt.parametros import DeteccionLuz
+    H, W = 480, 640
+    vv, uu = np.mgrid[0:H, 0:W]
+    det = DetectorLuz(DeteccionLuz())
+    for (u0, w0) in [(400.3, 120.7), (405.8, 126.2), (90.5, 400.25)]:
+        img = np.full((H, W), 20, np.uint8)
+        d = np.hypot(uu - u0, vv - w0)
+        img[d <= 11] = 255                              # flash saturado
+        borde = (d > 11) & (d < 14)
+        img[borde] = 180
+        img[50, 600] = 255                              # píxel caliente aislado
+        r = det.procesar(img, usar_ventana=True)
+        if (u0, w0) == (90.5, 400.25):                  # salto grande: debe rechazarse por salto
+            assert not r.valido and "salto" in r.motivo, r
+            det.reiniciar()
+            r = det.procesar(img, usar_ventana=True)
+        assert r.valido, r.motivo
+        assert abs(r.u - u0) < 0.6 and abs(r.w - w0) < 0.6, (r.u, r.w, u0, w0)
+    vacia = np.full((H, W), 30, np.uint8)
+    assert not det.procesar(vacia).valido
+
+
 def test_monitor_red_sirve_y_exporta():
     """MON-1 / MON-2: el servidor arranca, entrega config, flujo (sin NaN) y CSV."""
     import json

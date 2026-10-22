@@ -61,6 +61,25 @@ class Deteccion:
 
 
 @dataclass
+class DeteccionLuz:
+    #* Detector de FUENTE DE LUZ (flash del celular), traído de mi_proyecto_camara/luz_2.py:
+    #* búsqueda por bloques en el plano Y + centroide ponderado alrededor del mejor bloque.
+    umbral: int = 220             # pico mínimo (0..255) para considerar que hay objetivo (luz_2)
+    min_pix: int = 3              # píxeles mínimos sobre el corte (descarta píxeles calientes)
+    frac_corte: float = 0.7       # pesos: sólo lo que supera 0,7·pico (luz_2)
+    bloque_global: int = 8        # bloque de la búsqueda en el cuadro completo [px]
+    bloque_ventana: int = 4       # bloque dentro de la ventana de seguimiento [px]
+    ventana_seguimiento: int = 96  # lado de la ventana (luz_2: radio 48 px)
+    #? luz_2 usa un radio de 1,5 bloques (12 px global, 6 px en la ventana). Con el flash cerca,
+    #? la mancha saturada pasa de 12 px y el centroide quedaba amarrado al bloque. Se usa un radio
+    #? fijo mayor; ajustar si el flash se ve mucho más grande.
+    radio_centroide: int = 16     # [px]
+    area_min: int = 3
+    area_max: int = 4000
+    salto_max_px: float = 80.0
+
+
+@dataclass
 class DeteccionRoja:
     #* Detector por COLOR (plano V), traído de mi_proyecto_camara/laser_op.py.
     v_umbral: int = 170           # pico mínimo del plano V (128 = neutro, 255 = rojo puro)
@@ -135,7 +154,11 @@ class Actuador:
 # ---------------------------------------------------------------------------
 @dataclass
 class Enlace:
-    puerto: str = "/dev/ttyUSB0"  #? usar /dev/serial/by-id/... para que no cambie entre reinicios
+    #* UART del header de la RPi 5 (GPIO14 = TXD, pin 8; GPIO15 = RXD, pin 10). Requiere
+    #* "dtparam=uart0=on" en /boot/firmware/config.txt. Por USB sería /dev/ttyUSB0.
+    #! NO usar /dev/serial0: en la RPi 5 apunta al conector de depuración (ttyAMA10), no a los
+    #! pines 8 y 10. Ése es probablemente el motivo por el que luz_2.py no llegaba al ESP32.
+    puerto: str = "/dev/ttyAMA0"
     baudios: int = 921600         #* firmware esp32_pan_tilt (la PoC de texto usaba 115 200)
     periodo_min_s: float = 0.0    # trama binaria: una consigna por cuadro (80 Hz)
     watchdog_s: float = 0.100     # sin telemetría -> enlace caído (MODO_SEGURO)
@@ -147,6 +170,7 @@ class Parametros:
     captura: Captura = field(default_factory=Captura)
     deteccion: Deteccion = field(default_factory=Deteccion)
     deteccion_roja: DeteccionRoja = field(default_factory=DeteccionRoja)
+    deteccion_luz: DeteccionLuz = field(default_factory=DeteccionLuz)
     prediccion: Prediccion = field(default_factory=Prediccion)
     supervisor: Supervisor = field(default_factory=Supervisor)
     lazo: LazoExterno = field(default_factory=LazoExterno)

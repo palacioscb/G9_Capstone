@@ -55,14 +55,29 @@ python herramientas/respuesta_escalon.py --solo-modelo --eje pan --kp 5 --ki 6.2
 
 ## 2. En la Raspberry Pi
 
+**Enlace con el ESP32 por el UART del header** (cableado del 22-10): RX0 del ESP32 al pin 8 (GPIO14, TXD), TX0 al pin 10 (GPIO15, RXD) y GND común. El puerto es `/dev/ttyAMA0`, que ya es el valor por defecto de `--puerto`. Hay que habilitarlo una sola vez:
+
+```bash
+echo "dtparam=uart0=on" | sudo tee -a /boot/firmware/config.txt
+sudo reboot
+ls -l /dev/ttyAMA0          # debe existir
+```
+
+No usar `/dev/serial0`: en la RPi 5 apunta al conector de depuración (`ttyAMA10`), no a los pines 8 y 10.
+
+**Detectores:**
+- `--detector rojo` es el láser rojo, por color.
+- `--detector luz` es el flash del celular. Viene de `mi_proyecto_camara/luz_2.py`. Ninguna otra luz blanca intensa puede quedar en el cuadro.
+- `--detector brillo` es el original.
+
 Antes de medir: `vcgencmd get_throttled` debe dar `0x0`. Dependencias: `sudo apt install -y python3-serial python3-opencv python3-matplotlib`.
 
 ```bash
 python3 pruebas_unitarias/test_esqueleto.py
 python3 main.py --fuente camara --duracion 20 --ventana            # 1. láser real, sin motores: revisar detección
-python3 main.py --fuente camara --enlace trama --puerto /dev/ttyUSB0 --duracion 20   # 2. con ESP32, motores deshabilitados
-python3 herramientas/respuesta_escalon.py --puerto /dev/ttyUSB0 --eje pan --escalon 3 --habilitar   # 3. modelo
-python3 main.py --fuente camara --enlace trama --puerto /dev/ttyUSB0 --duracion 30 --habilitar      # 4. LAZO CERRADO
+python3 main.py --fuente camara --enlace trama --duracion 20   # 2. con ESP32, motores deshabilitados
+python3 herramientas/respuesta_escalon.py --puerto /dev/ttyAMA0 --eje pan --escalon 3 --habilitar   # 3. modelo
+python3 main.py --fuente camara --enlace trama --duracion 30 --habilitar      # 4. LAZO CERRADO
 ```
 
 - En el paso 1, si el láser no se detecta, revisar `pico` y `motivo` en el CSV. Si el pico de V queda bajo 170, subir `ganancias_color[0]` (rojo) o bajar `exposicion_us`.
@@ -76,7 +91,7 @@ python3 main.py --fuente camara --enlace trama --puerto /dev/ttyUSB0 --duracion 
 
 ```bash
 # [RPi]
-python3 main.py --fuente camara --enlace trama --puerto $PUERTO --duracion 0 --monitor
+python3 main.py --fuente camara --enlace trama --duracion 0 --monitor
 # [PC] navegador:  http://g9-cap.local:8000   (o http://<IP de la RPi>:8000)
 ```
 

@@ -21,27 +21,30 @@ Compilado y enlazado contra Arduino-ESP32 2.0.17 (el núcleo de `platform = espr
 | `src/protocolo.cpp` | CS-4 | Tramas binarias con CRC-16 (las mismas de `pt/enlace.py`) |
 | `src/main.cpp` | CS-9 y resto | Estados, supervisión local, watchdog, telemetría, consola, captura de escalón |
 
-## Pines (ESP32 DevKit WROOM)
+## Pines: cableado real del laboratorio (22-10-2026)
+
+Placa de expansión con S/V/G por GPIO. Todo está en `include/config.h`.
 
 | Función | Pan (azimut) | Tilt (elevación) | Nota |
 |---|---|---|---|
-| STEP | GPIO25 | GPIO17 | |
-| DIR | GPIO26 | GPIO16 | |
-| nENABLE | GPIO27 | GPIO4 | **pull-up externo 4,7 kΩ a 3V3 obligatorio** |
-| nFAULT | GPIO34 | GPIO35 | sólo entrada: **pull-up externo 10 kΩ a 3V3** |
-| Final de carrera | GPIO13 | GPIO23 | los 2 topes del eje, **NC en serie** a GND; pull-up interno |
-| AS5600 SDA | GPIO21 (bus 0) | GPIO18 (bus 1) | un bus I2C por sensor: no hace falta multiplexor |
-| AS5600 SCL | GPIO22 (bus 0) | GPIO19 (bus 1) | |
-| M0 / M1 / M2 | GPIO32 / 33 / 14 | (los mismos) | compartidos: ambos drivers en 1/16 |
+| nENABLE | GPIO13 (S) | GPIO27 (S) | sin pull-up externo: el driver queda energizado (sin pasos) mientras el ESP32 arranca |
+| STEP | GPIO12 (S) | GPIO26 (S) | GPIO12 es pin de arranque: **no** ponerle pull-up |
+| DIR | GPIO14 (S) | GPIO25 (S) | |
+| AS5600 SDA / SCL | GPIO21 / GPIO22 (bus 0) | GPIO18 / GPIO19 (bus 1) | |
+| AS5600 VCC | fila V del GPIO23 | fila V del GPIO5 | **debe ser 3,3 V**: medir V–G (puente de la placa) |
+| Enlace con la RPi | RX0 (GPIO3) ← pin 8 RPi · TX0 (GPIO1) → pin 10 RPi · G → GND RPi | | también escucha en GPIO16 (RX2) / GPIO17 (TX2) |
 
-- El lado izquierdo de la placa queda con el eje pan y los micropasos; es el mismo cableado de la prueba de concepto. El lado derecho queda con los sensores y el eje tilt.
-- Libres y reservados: GPIO36 y GPIO39 (ADC de los shunt).
-- **Topes:** con contactos NC en serie, el pin lee LOW en reposo. Si un tope se abre o se corta un cable, lee HIGH y el eje se detiene (a prueba de fallas). Si los topes son NO, usar `FIN_CONTACTO_NC = false`.
-- El corte de nENABLE por hardware desde los topes (EA-5) queda para la PCB.
-- Diagrama completo y tabla pin a pin: `docs/conexiones_laboratorio.pdf`.
-- En cada DRV8825, SLEEP y RESET van a 3V3, igual que en la prueba de concepto.
-- Los AS5600 se alimentan con 3V3. Si el bus falla con cables largos, agregar 4,7 kΩ de pull-up en SDA y SCL.
-- GPIO4 tiene pull-down interno durante el reinicio. Sin el pull-up externo, el driver de tilt queda habilitado mientras el ESP32 arranca.
+- **Sin cablear todavía:** nFAULT, finales de carrera y M0/M1/M2. El firmware no los lee (`USAR_PIN_FAULT`, `USAR_FINES_CARRERA` y `USAR_PINES_MICROPASO` en `false`).
+- **Micropasos:**
+  - Los fija el hardware del driver. Con M0..M2 sueltos, el DRV8825 trabaja en paso completo (1,8°). Para 1/16, llevar M2 a 3V3.
+  - El firmware parte en 1/1. Se cambia con `m <N>`, que queda guardado, y la prueba `t` los estima.
+- **Enlace:**
+  - El firmware escucha tramas en UART0 y UART2, y responde por el que recibió la última trama válida.
+  - Con la RPi en RX0/TX0, no conectar el USB del ESP32 mientras corre el lazo, porque el chip USB-serie choca con el TX de la RPi.
+  - Para cargar firmware, desconectar el cable de RX0, o mover los dos cables a GPIO16/17.
+- **Ajustes guardados en el ESP32 (NVS):**
+  - `m` (micropasos), `i <eje> motor|sensor` (signos) y `z` (cero) se guardan y sobreviven al reinicio.
+  - `p` muestra los valores en uso; `b borrar` vuelve a los de `config.h`.
 
 ## Comentarios con color
 
@@ -49,29 +52,30 @@ Se usa la extensión de comentarios con color: `//!` rojo (seguridad y riesgos),
 
 ## Puesta en marcha en el laboratorio (orden sugerido)
 
-Monitor de PlatformIO a **921 600 baudios** (ya está en `platformio.ini`). `?` muestra la ayuda.
+Consola a **921 600 baudios**: desde la RPi con `python3 -m serial.tools.miniterm /dev/ttyAMA0 921600`, o desde el monitor de PlatformIO si el ESP32 está por USB. `?` muestra la ayuda.
 
 1. **Sin VMOT.** Cargar el firmware y revisar que ambos AS5600 digan `OK` y `status=0x20` (imán detectado). Con `p`, girar cada eje a mano: `med` debe cambiar suavemente.
 2. **Topes.** Con `p`, presionar cada final de carrera: `fin=ACTIVO` en el eje correcto.
-3. **Cero.** Centrar la plataforma a mano y escribir `z`. Copiar los `ceroRaw` que imprime a `config.h` para que el cero sea permanente: con eso el AS5600 funciona como *homing* absoluto.
+3. **Cero.** Centrar la plataforma a mano y escribir `z`. El cero queda guardado en el ESP32, así que el AS5600 funciona como *homing* absoluto. Copiar también los `ceroRaw` a `config.h`.
 4. **Límites.** Medir el recorrido libre de cada eje y ajustar `limMinDeg` y `limMaxDeg` en `config.h` y en `pt/parametros.py` (`LazoExterno`).
-5. **Con VMOT: signos.** `e 1`, luego `t pan` y `t tilt`. Cada eje avanza +3° y vuelve.
-   - Pan debe moverse a la **derecha** y tilt hacia **arriba**. Si no, invertir `signoMotor`.
-   - Después, si el mensaje dice "sensor con signo CONTRARIO", invertir `signoSensor`.
-   - Recompilar y repetir la prueba hasta que ambos queden coherentes.
+5. **Con VMOT: micropasos y signos.** `e 1`, luego `t pan` y `t tilt`. Cada eje avanza al menos 3° (5,4° en 1/1) y vuelve.
+   - Si dice "MICROPASOS: el driver parece estar en 1/N": `x`, `m N` y repetir.
+   - Pan debe moverse a la **derecha** y tilt hacia **arriba**. Si no: `x`, `i pan motor` (o `i tilt motor`) y repetir.
+   - Si dice "sensor con signo CONTRARIO": `x`, `i <eje> sensor` y repetir.
+   - Todo queda guardado en el ESP32, sin recompilar.
 6. **Primer lazo cerrado.** `r pan 5`, `r pan 0`, `r tilt 3`, `r tilt 0`. Cada eje debe ir y quedarse.
    - Si algo diverge, `x`: el firmware igual lo corta por pérdida de pasos si la diferencia pasa de 2°.
 7. **Prueba del modelo de pid_t_2.** Desde la RPi:
    ```bash
-   python3 herramientas/respuesta_escalon.py --puerto /dev/ttyUSB0 --eje pan --escalon 3 --habilitar
-   python3 herramientas/respuesta_escalon.py --puerto /dev/ttyUSB0 --eje pan --escalon 2 --alfa 0   # modelo lineal
+   python3 herramientas/respuesta_escalon.py --puerto /dev/ttyAMA0 --eje pan --escalon 3 --habilitar
+   python3 herramientas/respuesta_escalon.py --puerto /dev/ttyAMA0 --eje pan --escalon 2 --alfa 0   # modelo lineal
    ```
    La herramienta compara la medición con el modelo y estima ζ. Con eso queda b medido y el techo real Kp < b/M.
    - Para comparar con el modelo **lineal** del PDF, usar `--alfa 0` y escalones de 2 a 4°: así el tope de frenado y la banda integral no actúan, y la ley es idéntica a la de pid_t_2.
    - Recién entonces subir a las ganancias de pid_t_2 con `k pan 5 6.25` y `k tilt 20 100`.
 8. **Lazo completo con la cámara** (desde la RPi):
    ```bash
-   python3 main.py --fuente camara --enlace trama --puerto /dev/ttyUSB0 --duracion 30 --habilitar
+   python3 main.py --fuente camara --enlace trama --duracion 30 --habilitar
    ```
 
 ## Consola de diagnóstico
@@ -87,11 +91,14 @@ Monitor de PlatformIO a **921 600 baudios** (ya está en `platformio.ini`). `?` 
 | `k <eje> <Kp> <Ki>` | ganancias en caliente [1/s, 1/s²] |
 | `a <eje> <deg/s²>` | límite de aceleración del PI (0 = sin límite, sólo escalones chicos) |
 | `v <eje> <deg/s>` | velocidad en lazo abierto (diagnóstico) |
-| `t <eje>` | prueba de signos |
-| `z` | cero en la posición actual (con los drivers deshabilitados) |
+| `t <eje>` | prueba de signos y estimación de micropasos |
+| `m <N>` | micropasos del driver (1–32), guardado |
+| `i <eje> motor\|sensor` | invertir un signo, guardado |
+| `b borrar` | borrar los ajustes guardados |
+| `z` | cero en la posición actual (con los drivers deshabilitados), guardado |
 | `p` | estado |
 
-Los ejes se escriben `0`/`pan`/`p` o `1`/`tilt`/`t`. Mientras el programa de la RPi está conectado (enlace binario activo), la consola se ignora a propósito.
+Los ejes se escriben `0`/`pan`/`p` o `1`/`tilt`/`t`. Mientras el programa de la RPi está conectado (enlace binario activo), la consola del mismo UART se ignora a propósito. Si el enlace va por UART2, por el USB se aceptan `x`, `p`, `e` y `?`.
 
 ## Estados y supervisión local
 

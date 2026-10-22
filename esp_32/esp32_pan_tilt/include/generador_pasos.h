@@ -17,7 +17,9 @@
 namespace pasos {
 
 //* Configura pines STEP/DIR/nENABLE, micropasos y arranca el temporizador.
-void iniciar();
+void iniciar(uint8_t micropasos);
+//* Escribe M0..M2 si están cableados (USAR_PINES_MICROPASO); si no, no hace nada.
+void fijarMicropasos(uint8_t micropasos);
 
 //* Velocidad con signo en micropasos/s (+ = DIR en alto). Se satura a ±PASOS_S_MAX.
 void fijarVelocidad(uint8_t eje, float pasosPorSegundo);

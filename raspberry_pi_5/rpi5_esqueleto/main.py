@@ -12,8 +12,9 @@ Ejemplos:
   python3 main.py                                          # sintética, sin motores (PC o RPi)
   python3 main.py --enlace simulado --lampara              # LAZO CERRADO SIMULADO en el PC
   python3 main.py --fuente camara --duracion 20            # cámara real, sin motores
-  python3 main.py --fuente camara --enlace trama --puerto /dev/ttyUSB0            # observar: el ESP32 queda DESHABILITADO
-  python3 main.py --fuente camara --enlace trama --puerto /dev/ttyUSB0 --habilitar  # LAZO CERRADO REAL
+  python3 main.py --fuente camara --enlace trama                         # observar: el ESP32 queda DESHABILITADO
+  python3 main.py --fuente camara --enlace trama --habilitar             # LAZO CERRADO REAL (láser rojo)
+  python3 main.py --fuente camara --enlace trama --habilitar --detector luz   # ídem con el flash del celular
   python3 main.py --fuente camara --duracion 0 ...         # sin fin (Ctrl+C o SIGTERM para detener)
   python3 main.py ... --monitor                            # tablero web: http://g9-cap.local:8000
 """
@@ -30,7 +31,7 @@ import numpy as np
 
 from pt.parametros import Parametros
 from pt.geometria import Geometria
-from pt.deteccion import DetectorLaser, DetectorLaserRojo
+from pt.deteccion import DetectorLaser, DetectorLaserRojo, DetectorLuz
 from pt.supervisor import Supervisor, Estado
 from pt.control import ReferenciaVisual
 from pt.enlace import EnlaceNulo, EnlaceTrama, EnlaceSimulado
@@ -43,10 +44,12 @@ def argumentos():
     ap.add_argument("--duracion", type=float, default=10.0, help="segundos (0 = sin fin, sólo con --fuente camara)")
     ap.add_argument("--fps", type=float, help="sobrescribe parametros.Captura.fps")
     ap.add_argument("--exposicion", type=int, help="µs; fija la exposición")
-    ap.add_argument("--detector", choices=["rojo", "brillo"], default="rojo")
+    ap.add_argument("--ganancia", type=float, help="ganancia analógica (luz_2.py usa 2,0)")
+    ap.add_argument("--detector", choices=["rojo", "luz", "brillo"], default="rojo",
+                    help="rojo = láser rojo (plano V); luz = flash del celular (de luz_2.py); brillo = el original")
     ap.add_argument("--enlace", choices=["nulo", "simulado", "trama"], default="nulo",
                     help="nulo: sin actuadores; simulado: ESP32 y ejes simulados; trama: ESP32 real")
-    ap.add_argument("--puerto", help="p. ej. /dev/ttyUSB0 o /dev/serial/by-id/...")
+    ap.add_argument("--puerto", help="por defecto /dev/ttyAMA0 (UART del header, pines 8 y 10)")
     ap.add_argument("--baudios", type=int)
     ap.add_argument("--habilitar", action="store_true", help="habilita los drivers del ESP32 (mueve los motores)")
     ap.add_argument("--feedforward", action="store_true", help="envía ω_ff (velocidad estimada del objetivo)")
@@ -199,6 +202,8 @@ def main():
         P.captura.fps = a.fps
     if a.exposicion:
         P.captura.exposicion_us = a.exposicion
+    if a.ganancia:
+        P.captura.ganancia = a.ganancia
     if a.puerto:
         P.enlace.puerto = a.puerto
     if a.baudios:
@@ -246,7 +251,12 @@ def main():
     tiempo_virtual = a.fuente == "sintetica" and not a.tiempo_real
     retardo_ns = int(P.lazo.retardo_enlace_s * 1e9)
 
-    det = DetectorLaserRojo(P.deteccion_roja) if a.detector == "rojo" else DetectorLaser(P.deteccion)
+    if a.detector == "rojo":
+        det = DetectorLaserRojo(P.deteccion_roja)
+    elif a.detector == "luz":
+        det = DetectorLuz(P.deteccion_luz)
+    else:
+        det = DetectorLaser(P.deteccion)
     ref = ReferenciaVisual(P, geo)
     sup = Supervisor(P.supervisor, con_actuadores=(a.enlace != "nulo"))
     reg = Registro(a.registro, prefijo=f"{a.fuente}_{a.enlace}")

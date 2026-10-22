@@ -27,6 +27,10 @@ class SensorAS5600 {
   //* Fija el cero en la posición actual.
   void ponerCero();
 
+  //* Invierte el sentido (signoSensor) sin perder la referencia del cero.
+  void invertirSigno() { signo_ = -signo_; recalcular(); }
+  int8_t signo() const { return signo_; }
+
   float   gradosEje() const { return grados_; }    // θ_med [°]
   int16_t raw() const { return raw_; }             // 0..4095, último valor válido
   int16_t cero() const { return cero_; }

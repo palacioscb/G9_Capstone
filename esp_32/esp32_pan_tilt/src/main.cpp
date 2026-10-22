@@ -20,6 +20,8 @@
  */
 #include <Arduino.h>
 #include <Wire.h>
+#include <Preferences.h>
+#include <driver/gpio.h>
 #include <math.h>
 
 #include "config.h"
@@ -70,8 +72,29 @@ static Fuente   fuente = CONSOLA;
 static uint8_t  fallas = 0;
 static char     motivoFalla[72] = "";
 
-// Enlace
-static proto::Receptor rx;
+// Enlace: se escucha en UART0 (RX0/TX0, compartido con el USB) y en UART2 (GPIO16/17).
+//* Se responde por el UART que recibió la última trama válida. La consola de texto se acepta
+//* en ambos; con el enlace activo, el UART del enlace no acepta texto y el otro sólo acepta
+//* 'x', 'p', 'e' y '?' (para poder detener desde el USB mientras la RPi controla).
+struct Puerto {
+  HardwareSerial* s;
+  proto::Receptor rx;
+  char linea[64];
+  uint8_t n;
+  bool visto;                // llegó algo por aquí (para repetir los avisos)
+};
+static Puerto puerto0 = {&Serial, {}, {}, 0, true};
+static Puerto puerto2 = {&Serial2, {}, {}, 0, false};
+static Puerto* enlace = &puerto0;           // UART del enlace con la RPi
+static HardwareSerial* salida = &Serial;    // a dónde va la respuesta del comando en curso
+
+// Ajustes de puesta en marcha guardados en la memoria no volátil (NVS) del ESP32:
+// micropasos, signos y ceros. Así la puesta en marcha se hace por consola, sin recompilar.
+static Preferences ajustes;
+static uint8_t micropasos = MICROPASOS_POR_DEFECTO;
+static int8_t  signoMotor[N_EJES]  = {EJES[0].signoMotor, EJES[1].signoMotor};
+static int8_t  signoSensor[N_EJES] = {EJES[0].signoSensor, EJES[1].signoSensor};
+static int16_t ceroRaw[N_EJES]     = {EJES[0].ceroRaw, EJES[1].ceroRaw};
 static uint32_t tUltTramaMs = 0, tUltConsignaMs = 0;
 static bool     huboTrama = false;
 static uint8_t  seqConsigna = 0, seqTx = 0;
@@ -85,7 +108,12 @@ static uint8_t  finCuenta[N_EJES] = {0, 0}; // ms seguidos con el final de carre
 
 //* Final de carrera activo (NC en serie: pin en ALTO = algún tope abierto o cable cortado).
 static inline bool finActivo(uint8_t e) {
-  return USAR_FINES_CARRERA && (digitalRead(EJES[e].pinFin) == (FIN_CONTACTO_NC ? HIGH : LOW));
+  return USAR_FINES_CARRERA && EJES[e].pinFin != PIN_NC &&
+         (digitalRead(EJES[e].pinFin) == (FIN_CONTACTO_NC ? HIGH : LOW));
+}
+
+static inline bool faultActivo(uint8_t e) {
+  return USAR_PIN_FAULT && EJES[e].pinFault != PIN_NC && digitalRead(EJES[e].pinFault) == LOW;
 }
 
 // Captura de escalón (CTL-7)
@@ -105,13 +133,20 @@ static TwoWire& bus(uint8_t e) { return EJES[e].busI2C == 0 ? Wire : Wire1; }
 static inline float limitar(float x, float lo, float hi) { return x < lo ? lo : (x > hi ? hi : x); }
 
 //* Factor micropasos -> grados del eje (con signo del motor y relación de transmisión).
+static inline float gradosPorMicropaso() { return PASO_COMPLETO_DEG / (float)micropasos; }
+
 static inline float gradosPorPasoEje(uint8_t e) {
-  return EJES[e].signoMotor * GRADOS_POR_MICROPASO / EJES[e].relacion;
+  return signoMotor[e] * gradosPorMicropaso() / EJES[e].relacion;
+}
+
+//* Umbral de pérdida de pasos: 2° o 2,5 pasos, lo que sea mayor (en 1/1 un paso es 1,8°).
+static inline float umbralPerdida(uint8_t e) {
+  return fmaxf(UMBRAL_PERDIDA_DEG, UMBRAL_PERDIDA_PASOS * gradosPorMicropaso() / EJES[e].relacion);
 }
 
 //* ω del eje [°/s] -> micropasos/s con signo, para el generador.
 static inline float omegaAPasos(uint8_t e, float omega) {
-  return EJES[e].signoMotor * omega * EJES[e].relacion / GRADOS_POR_MICROPASO;
+  return signoMotor[e] * omega * EJES[e].relacion / gradosPorMicropaso();
 }
 
 static bool enlaceActivo() {
@@ -123,7 +158,9 @@ static bool enlaceActivo() {
 static void aviso(const char* fmt, ...) {
   char buf[160];
   va_list ap; va_start(ap, fmt); vsnprintf(buf, sizeof(buf), fmt, ap); va_end(ap);
+  //* A los dos UART si por el UART2 ya llegó algo: la RPi ve los avisos y el USB también.
   Serial.print("# "); Serial.println(buf);
+  if (ESCUCHAR_UART2 && puerto2.visto) { Serial2.print("# "); Serial2.println(buf); }
 }
 
 static void sincronizarPasos(uint8_t e) {
@@ -197,7 +234,7 @@ static bool rearmarYHabilitar() {
       return false;
     }
     ej[e].thetaMed = sensor[e].gradosEje();
-    if (USAR_PIN_FAULT && digitalRead(EJES[e].pinFault) == LOW) {
+    if (faultActivo(e)) {
       aviso("no se habilita: nFAULT activo en %s", EJES[e].nombre);
       return false;
     }
@@ -236,7 +273,7 @@ static void pasoControl(float dt, uint32_t ahoraUs) {
     }
     ej[e].thetaMed = sensor[e].gradosEje();
 
-    if (USAR_PIN_FAULT && digitalRead(EJES[e].pinFault) == LOW) {
+    if (faultActivo(e)) {
       declararFalla(bitDriver(e), "nFAULT del DRV8825 de %s (sobrecorriente/termico/UVLO)", EJES[e].nombre);
     }
   }
@@ -277,7 +314,7 @@ static void pasoControl(float dt, uint32_t ahoraUs) {
                     ej[e].thetaMed, ej[e].thetaMed >= 0.0f ? "positivo" : "negativo");
     }
     //* Pérdida de pasos (ACT-5): lo que dicen los pasos emitidos contra lo que mide el sensor.
-    if (fabsf(ej[e].thetaPasos - ej[e].thetaMed) > UMBRAL_PERDIDA_DEG) {
+    if (fabsf(ej[e].thetaPasos - ej[e].thetaMed) > umbralPerdida(e)) {
       declararFalla(F_PASOS, "perdida de pasos en %s: pasos %.2f vs sensor %.2f deg",
                     c.nombre, ej[e].thetaPasos, ej[e].thetaMed);
     }
@@ -350,13 +387,13 @@ static void enviarTelemetria(uint32_t tUs) {
   c[30] = seqConsigna;
   uint8_t trama[7 + proto::LARGO_TELEMETRIA];
   const size_t n = proto::armar(trama, seqTx++, proto::TELEMETRIA, c, sizeof(c));
-  Serial.write(trama, n);
+  enlace->s->write(trama, n);
 }
 
 // ============================================================================
 //* TRAMAS RECIBIDAS (RPi -> ESP32)
 // ============================================================================
-static void procesarTrama() {
+static void procesarTrama(const proto::Receptor& rx) {
   tUltTramaMs = millis();
   huboTrama = true;
 
@@ -395,7 +432,7 @@ static void procesarTrama() {
 //* CONSOLA DE DIAGNÓSTICO (texto, puesta en marcha)
 // ============================================================================
 static void imprimirAyuda() {
-  Serial.println(F(
+  salida->println(F(
     "# Consola esp32_pan_tilt. Ejes: 0|pan, 1|tilt. Angulos en grados del eje.\n"
     "#   e 1 | e 0        habilitar (y rearmar fallas) | deshabilitar\n"
     "#   x                parada inmediata y deshabilitar\n"
@@ -406,18 +443,26 @@ static void imprimirAyuda() {
     "#   k <eje> <Kp> <Ki> cambiar ganancias en caliente\n"
     "#   a <eje> <deg/s2> limite de aceleracion del PI (0 = sin limite, solo escalones chicos)\n"
     "#   v <eje> <deg/s>  velocidad en LAZO ABIERTO (diagnostico)\n"
-    "#   t <eje>          prueba de signos: +3 deg y vuelta (debe estar en RETENCION)\n"
-    "#   z                cero en la posicion actual (deshabilitado); imprime ceroRaw\n"
+    "#   t <eje>          prueba de signos y de micropasos (debe estar en RETENCION)\n"
+    "#   z                cero en la posicion actual (deshabilitado); queda GUARDADO\n"
+    "#   m <N>            micropasos del driver: 1 2 4 8 16 32 (deshabilitado); queda GUARDADO\n"
+    "#   i <eje> motor|sensor  invertir signo (deshabilitado); queda GUARDADO\n"
+    "#   b borrar         borrar los ajustes guardados (vuelve a config.h)\n"
     "#   p                estado        ?  esta ayuda"));
 }
 
 static void imprimirEstado() {
-  Serial.printf("# estado=%s fallas=0x%02X (%s) fuente=%s enlace=%s tramas=%lu err_crc=%lu\n",
+  salida->printf("# estado=%s fallas=0x%02X (%s) fuente=%s enlace=%s por %s | tramas uart0=%lu (crc %lu) uart2=%lu (crc %lu)\n",
                 NOMBRE_ESTADO[estado], fallas, motivoFalla[0] ? motivoFalla : "-",
                 fuente == ENLACE ? "enlace" : "consola", enlaceActivo() ? "activo" : "no",
-                (unsigned long)rx.tramasValidas, (unsigned long)rx.erroresCrc);
+                enlace == &puerto2 ? "UART2 (GPIO16/17)" : "UART0 (RX0/TX0)",
+                (unsigned long)puerto0.rx.tramasValidas, (unsigned long)puerto0.rx.erroresCrc,
+                (unsigned long)puerto2.rx.tramasValidas, (unsigned long)puerto2.rx.erroresCrc);
+  salida->printf("# micropasos 1/%u (%.4f deg/paso) | signoMotor pan %+d tilt %+d | signoSensor pan %+d tilt %+d"
+                 " | ceroRaw pan %d tilt %d\n", micropasos, gradosPorMicropaso(), signoMotor[0], signoMotor[1],
+                 signoSensor[0], signoSensor[1], sensor[0].cero(), sensor[1].cero());
   for (uint8_t e = 0; e < N_EJES; e++) {
-    Serial.printf("#  %-4s med=%+8.3f ref=%+8.3f w=%+7.2f pasos=%+8.3f raw=%4d cero=%4d "
+    salida->printf("#  %-4s med=%+8.3f ref=%+8.3f w=%+7.2f pasos=%+8.3f raw=%4d cero=%4d "
                   "Kp=%.2f Ki=%.2f st=0x%02X i2c_err=%u EN=%d fin=%s\n",
                   EJES[e].nombre, ej[e].thetaMed, ej[e].refEff, ej[e].omegaCmd, ej[e].thetaPasos,
                   sensor[e].raw(), sensor[e].cero(), ctl[e].kp(), ctl[e].ki(),
@@ -437,22 +482,24 @@ static void descargarCaptura() {
   if (capturando) { aviso("captura en curso, espera a que termine"); return; }
   if (capturaN == 0) { aviso("no hay captura; usa 'g <eje> <deg>'"); return; }
   //* alfa_max = 0 en la cabecera significa "sin límite".
-  Serial.printf("#CAPTURA eje=%s kp=%.4f ki=%.4f escalon=%.4f n=%u dt_us=%lu omega_max=%.1f alfa_max=%.1f\n",
+  salida->printf("#CAPTURA eje=%s kp=%.4f ki=%.4f escalon=%.4f n=%u dt_us=%lu omega_max=%.1f alfa_max=%.1f\n",
                 EJES[capturaEje].nombre, capturaKp, capturaKi, capturaEscalon, capturaN,
                 (unsigned long)(PERIODO_CTL_US * CAPTURA_DECIMACION), OMEGA_MAX_DPS, capturaAlfa >= 1e8f ? 0.0f : capturaAlfa);
-  Serial.println("t_s,ref_deg,med_deg,omega_dps,pasos_deg");
+  salida->println("t_s,ref_deg,med_deg,omega_dps,pasos_deg");
   for (uint16_t i = 0; i < capturaN; i++) {
     const Muestra& m = captura[i];
-    Serial.printf("%.6f,%.4f,%.4f,%.3f,%.4f\n", m.t_us * 1e-6f, m.ref, m.med, m.omega, m.pasos);
+    salida->printf("%.6f,%.4f,%.4f,%.3f,%.4f\n", m.t_us * 1e-6f, m.ref, m.med, m.omega, m.pasos);
   }
-  Serial.println("#FIN");
+  salida->println("#FIN");
 }
 
 //* Prueba de signos: +3° y vuelta en lazo abierto, comparando pasos emitidos con el sensor.
 //! Bloquea el lazo ~1 s. El otro eje queda detenido (sin pulsos, con torque de retención).
 static void pruebaSignos(uint8_t e) {
   if (estado != RETENCION) { aviso("t: primero 'e 1' (estado RETENCION)"); return; }
-  const float AMPL = 3.0f, VEL = 20.0f;
+  //* Al menos 3 pasos, para que el sensor alcance a medir aunque los micropasos reales sean
+  //* más finos que los configurados (en 1/1 son 5,4°).
+  const float AMPL = fmaxf(3.0f, 3.0f * gradosPorMicropaso() / EJES[e].relacion), VEL = 20.0f;
   const uint32_t tMov = (uint32_t)(1000.0f * AMPL / VEL);
   for (uint8_t i = 0; i < N_EJES; i++) pasos::fijarVelocidad(i, 0.0f);
   delay(50);
@@ -472,12 +519,25 @@ static void pruebaSignos(uint8_t e) {
 
   const float dMed = th1 - th0;
   aviso("prueba de signos %s: ordenado %+.2f deg | sensor %+.2f deg", EJES[e].nombre, dPasos, dMed);
-  aviso("  1) La camara debio moverse hacia %s. Si fue al reves: invertir signoMotor.",
-        e == EJE_PAN ? "la DERECHA" : "ARRIBA");
-  if (dMed * dPasos < 0)                 aviso("  2) sensor con signo CONTRARIO: invertir signoSensor.");
-  else if (fabsf(dMed) < 0.5f * AMPL)    aviso("  2) el sensor casi no se movio: revisar iman/relacion/acople.");
-  else                                   aviso("  2) signo del sensor coherente con los pasos.");
-  aviso("  (si se corrige signoMotor, repetir la prueba: el paso 2 depende de el)");
+  aviso("  1) La camara debio moverse hacia %s. Si fue al reves: 'i %s motor'.",
+        e == EJE_PAN ? "la DERECHA" : "ARRIBA", EJES[e].nombre);
+  //* Micropasos: lo ordenado contra lo medido. Si el driver tiene micropasos más finos que los
+  //* configurados, el eje se mueve menos de lo ordenado (y al revés).
+  if (fabsf(dMed) >= 0.15f && fabsf(dPasos) > 1e-3f) {
+    const float est = micropasos * fabsf(dPasos) / fabsf(dMed);
+    const float estLim = est < 1.0f ? 1.0f : est;
+    uint8_t n = 1;
+    while (n < 32 && fabsf(log2f(estLim) - log2f((float)n)) > 0.5f) n <<= 1;
+    if (n != micropasos) aviso("  2) MICROPASOS: el driver parece estar en 1/%u (firmware en 1/%u). 'x', 'm %u' y repetir 't'.",
+                               n, micropasos, n);
+    else                 aviso("  2) micropasos 1/%u coherentes con el sensor.", micropasos);
+    if (dMed * dPasos < 0) aviso("  3) sensor con signo CONTRARIO: 'x' y luego 'i %s sensor'.", EJES[e].nombre);
+    else                   aviso("  3) signo del sensor coherente con los pasos.");
+  } else {
+    aviso("  2) el sensor casi no se movio (%.2f deg): driver sin corriente/VMOT, iman, acople,", dMed);
+    aviso("     o micropasos mas finos que 1/%u. Probar 'x', 'm 16' y repetir 't'.", micropasos);
+  }
+  aviso("  (si se corrige el signo del motor, repetir la prueba: el paso 3 depende de el)");
 
   for (uint8_t i = 0; i < N_EJES; i++) {          // volver a RETENCION sin salto
     sensor[i].leer();
@@ -572,34 +632,84 @@ static void ejecutarLinea(char* linea) {
       break;
     case 'z':
       if (estado != DESHABILITADO) { aviso("z: primero 'e 0' (deshabilitado)"); break; }
-      for (uint8_t e = 0; e < N_EJES; e++) { sensor[e].leer(); sensor[e].ponerCero(); }
-      aviso("cero fijado. Para que sea permanente, en config.h: ceroRaw pan = %d, tilt = %d",
-            sensor[EJE_PAN].cero(), sensor[EJE_TILT].cero());
+      for (uint8_t e = 0; e < N_EJES; e++) {
+        sensor[e].leer(); sensor[e].ponerCero();
+        ceroRaw[e] = sensor[e].cero();
+        ej[e].thetaMed = sensor[e].gradosEje();
+        sincronizarPasos(e);
+      }
+      ajustes.putShort("cero0", ceroRaw[0]); ajustes.putShort("cero1", ceroRaw[1]);
+      aviso("cero fijado y GUARDADO: ceroRaw pan = %d, tilt = %d (copiar tambien a config.h)", ceroRaw[0], ceroRaw[1]);
+      break;
+    case 'm': {
+      const int n = a1 ? atoi(a1) : 0;
+      if (!(n == 1 || n == 2 || n == 4 || n == 8 || n == 16 || n == 32)) { aviso("uso: m <1|2|4|8|16|32>  (ahora 1/%u)", micropasos); break; }
+      if (estado != DESHABILITADO) { aviso("m: primero 'e 0' (deshabilitado)"); break; }
+      micropasos = (uint8_t)n;
+      pasos::fijarMicropasos(micropasos);
+      for (uint8_t e = 0; e < N_EJES; e++) sincronizarPasos(e);
+      ajustes.putUChar("upasos", micropasos);
+      aviso("micropasos = 1/%u (%.4f deg/paso), GUARDADO.%s", micropasos, gradosPorMicropaso(),
+            USAR_PINES_MICROPASO ? "" : " Debe coincidir con M0..M2 del driver.");
+      break;
+    }
+    case 'i': {
+      if (eje < 0 || !a2 || (strcmp(a2, "motor") && strcmp(a2, "sensor"))) { aviso("uso: i <eje> motor|sensor"); break; }
+      if (estado != DESHABILITADO) { aviso("i: primero 'e 0' (deshabilitado)"); break; }
+      char clave[4] = {a2[0] == 'm' ? 'm' : 's', (char)('0' + eje), 0, 0};
+      if (a2[0] == 'm') { signoMotor[eje] = -signoMotor[eje]; ajustes.putChar(clave, signoMotor[eje]); }
+      else { sensor[eje].invertirSigno(); signoSensor[eje] = sensor[eje].signo(); ajustes.putChar(clave, signoSensor[eje]);
+             ej[eje].thetaMed = sensor[eje].gradosEje(); }
+      sincronizarPasos(eje);
+      aviso("%s: signoMotor %+d, signoSensor %+d, GUARDADO. Repetir 'e 1' y 't %s'.", EJES[eje].nombre,
+            signoMotor[eje], signoSensor[eje], EJES[eje].nombre);
+      break;
+    }
+    case 'b':
+      if (!a1 || strcmp(a1, "borrar")) { aviso("uso: b borrar"); break; }
+      ajustes.clear();
+      aviso("ajustes guardados BORRADOS. Al reiniciar se usan los valores de config.h.");
       break;
     default: aviso("comando desconocido; '?' para ayuda");
   }
 }
 
-static void atenderSerie() {
-  static char linea[64];
-  static uint8_t n = 0;
-  while (Serial.available()) {
-    const uint8_t b = (uint8_t)Serial.read();
+static void atenderPuerto(Puerto& p) {
+  while (p.s->available()) {
+    const uint8_t b = (uint8_t)p.s->read();
     //* Con el receptor en reposo, 0xAA inicia trama; cualquier otro byte es texto.
-    if (!rx.enReposo() || b == proto::CAB0) {
-      if (rx.alimentar(b)) procesarTrama();
+    if (!p.rx.enReposo() || b == proto::CAB0) {
+      if (p.rx.alimentar(b)) {
+        if (enlace != &p) aviso("enlace con la RPi por %s", &p == &puerto2 ? "UART2 (GPIO16/17)" : "UART0 (RX0/TX0)");
+        enlace = &p;
+        p.visto = true;
+        procesarTrama(p.rx);
+      }
       continue;
     }
     if (b == '\n' || b == '\r') {
-      linea[n] = 0;
-      //! Con el enlace binario activo la consola se ignora: restos de una trama corrupta
-      //! podrían parecer un comando. Para usar la consola, cerrar el programa de la RPi.
-      if (n && !enlaceActivo()) ejecutarLinea(linea);
-      n = 0;
-    } else if (n < sizeof(linea) - 1) {
-      linea[n++] = (char)b;
+      p.linea[p.n] = 0;
+      if (p.n) {
+        p.visto = true;
+        salida = p.s;
+        //! Con el enlace binario activo: en SU propio UART la consola se ignora (restos de una
+        //! trama corrupta podrían parecer un comando); en el otro UART sólo se aceptan
+        //! comandos de seguridad y de estado.
+        if (!enlaceActivo()) ejecutarLinea(p.linea);
+        else if (enlace != &p && strchr("xpe?", p.linea[0])) ejecutarLinea(p.linea);
+        else if (enlace != &p) aviso("enlace con la RPi activo: aqui solo x, p, e, ?");
+        salida = &Serial;
+      }
+      p.n = 0;
+    } else if (p.n < sizeof(p.linea) - 1) {
+      p.linea[p.n++] = (char)b;
     }
   }
+}
+
+static void atenderSerie() {
+  atenderPuerto(puerto0);
+  if (ESCUCHAR_UART2) atenderPuerto(puerto2);
 }
 
 // ============================================================================
@@ -608,21 +718,40 @@ static void atenderSerie() {
 void setup() {
   Serial.setRxBufferSize(1024);
   Serial.begin(BAUDIOS);
+  if (ESCUCHAR_UART2) {
+    Serial2.setRxBufferSize(1024);
+    Serial2.begin(BAUDIOS, SERIAL_8N1, PIN_RX2, PIN_TX2);
+    gpio_pullup_en((gpio_num_t)PIN_RX2);           //* RX2 sin cable: en reposo alto, sin ruido
+  }
+
+  //* Ajustes guardados (comandos m, i, z). Si no hay, valen los de config.h.
+  ajustes.begin("g9pt", false);
+  micropasos = ajustes.getUChar("upasos", MICROPASOS_POR_DEFECTO);
+  for (uint8_t e = 0; e < N_EJES; e++) {
+    const char km[3] = {'m', (char)('0' + e), 0}, ks[3] = {'s', (char)('0' + e), 0}, kc[6] = {'c', 'e', 'r', 'o', (char)('0' + e), 0};
+    signoMotor[e]  = ajustes.getChar(km, EJES[e].signoMotor);
+    signoSensor[e] = ajustes.getChar(ks, EJES[e].signoSensor);
+    ceroRaw[e]     = ajustes.getShort(kc, EJES[e].ceroRaw);
+  }
+  pasos::iniciar(micropasos);                      //* drivers deshabilitados desde el primer instante
   delay(50);
-  pasos::iniciar();                                //* drivers deshabilitados desde el primer instante
 
   for (uint8_t e = 0; e < N_EJES; e++) {
     const ConfigEje& c = EJES[e];
     ctl[e].configurar(c.kp, c.ki, OMEGA_MAX_DPS, ALFA_MAX_DPS2, BANDA_INTEGRAL_DEG);
-    const bool ok = sensor[e].iniciar(bus(e), c.pinSda, c.pinScl, c.signoSensor, c.ceroRaw);
+    const bool ok = sensor[e].iniciar(bus(e), c.pinSda, c.pinScl, signoSensor[e], ceroRaw[e]);
     ej[e].thetaMed = sensor[e].gradosEje();
     sincronizarPasos(e);
-    Serial.printf("# AS5600 %s: %s raw=%d theta=%.2f deg status=0x%02X\n", c.nombre,
+    aviso("AS5600 %s: %s raw=%d theta=%.2f deg status=0x%02X", c.nombre,
                   ok ? "OK" : "SIN RESPUESTA O SIN IMAN", sensor[e].raw(), ej[e].thetaMed, sensor[e].estado());
     if (!ok) declararFalla(bitSensor(e), "sensor %s no inicio", c.nombre);
   }
-  Serial.printf("# esp32_pan_tilt listo: %lu baudios, control %lu Hz, 1/%u micropasos. Drivers DESHABILITADOS.\n",
-                (unsigned long)BAUDIOS, (unsigned long)F_CONTROL_HZ, MICROPASOS);
+  aviso("esp32_pan_tilt listo: %lu baudios en UART0%s, control %lu Hz. Drivers DESHABILITADOS.",
+        (unsigned long)BAUDIOS, ESCUCHAR_UART2 ? " y UART2 (GPIO16/17)" : "", (unsigned long)F_CONTROL_HZ);
+  aviso("micropasos 1/%u | signoMotor %+d %+d | signoSensor %+d %+d | ceroRaw %d %d (%s)", micropasos,
+        signoMotor[0], signoMotor[1], signoSensor[0], signoSensor[1], ceroRaw[0], ceroRaw[1],
+        ajustes.isKey("upasos") || ajustes.isKey("cero0") || ajustes.isKey("m0") || ajustes.isKey("s0") ||
+        ajustes.isKey("m1") || ajustes.isKey("s1") ? "con ajustes guardados" : "valores de config.h");
   imprimirAyuda();
   tUltCtlUs = micros();
 }

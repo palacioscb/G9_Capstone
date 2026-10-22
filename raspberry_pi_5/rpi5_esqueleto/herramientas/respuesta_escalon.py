@@ -3,8 +3,8 @@
 respuesta_escalon.py — Prueba del modelo de pid_t_2.pdf contra la respuesta real de un eje.
 
 Uso (en la RPi, con el ESP32 por USB; el firmware esp32_pan_tilt cargado):
-    python3 herramientas/respuesta_escalon.py --puerto /dev/ttyUSB0 --eje pan --escalon 3 --habilitar
-    python3 herramientas/respuesta_escalon.py --puerto /dev/ttyUSB0 --eje tilt --escalon 2 --kp 20 --ki 100 --alfa 0
+    python3 herramientas/respuesta_escalon.py --puerto /dev/ttyAMA0 --eje pan --escalon 3 --habilitar
+    python3 herramientas/respuesta_escalon.py --puerto /dev/ttyAMA0 --eje tilt --escalon 2 --kp 20 --ki 100 --alfa 0
     python3 herramientas/respuesta_escalon.py --archivo registros/escalon_pan_....csv   # re-analizar
     python3 herramientas/respuesta_escalon.py --solo-modelo --eje pan --kp 5 --ki 6.25 --escalon 10
 """
@@ -169,7 +169,7 @@ def analizar(cab, datos, base: ParametrosEje, carpeta, nombre):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--puerto", help="p. ej. /dev/ttyUSB0")
+    ap.add_argument("--puerto", default="/dev/ttyAMA0", help="UART del header (pines 8 y 10); por USB: /dev/ttyUSB0")
     ap.add_argument("--baudios", type=int, default=921600)
     ap.add_argument("--eje", choices=["pan", "tilt"], default="pan")
     ap.add_argument("--escalon", type=float, default=3.0, help="grados (relativo a la posición actual)")

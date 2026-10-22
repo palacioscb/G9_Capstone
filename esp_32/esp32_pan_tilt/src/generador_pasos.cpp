@@ -72,11 +72,13 @@ static void IRAM_ATTR isrTick() {
 }
 
 // ---------------------------------------------------------------------------
-void iniciar() {
-  // Micropasos: M0..M2 compartidos por ambos drivers.
+void fijarMicropasos(uint8_t micropasos) {
+  //* Sólo si M0..M2 están cableados al ESP32. Si no, los micropasos los fija el hardware
+  //* del driver y el firmware sólo usa el valor para convertir pasos en grados.
+  if (!USAR_PINES_MICROPASO) return;
   // DRV8825: M2 M1 M0 -> 000 1/1, 001 1/2, 010 1/4, 011 1/8, 100 1/16, 101 1/32
   uint8_t codigo;
-  switch (MICROPASOS) {
+  switch (micropasos) {
     case 1: codigo = 0; break;   case 2: codigo = 1; break;   case 4: codigo = 2; break;
     case 8: codigo = 3; break;   case 16: codigo = 4; break;  case 32: codigo = 5; break;
     default: codigo = 4; break;
@@ -85,6 +87,10 @@ void iniciar() {
   digitalWrite(PIN_M0, codigo & 1);
   digitalWrite(PIN_M1, (codigo >> 1) & 1);
   digitalWrite(PIN_M2, (codigo >> 2) & 1);
+}
+
+void iniciar(uint8_t micropasos) {
+  fijarMicropasos(micropasos);
 
   for (uint8_t e = 0; e < N_EJES; e++) {
     const ConfigEje& c = EJES[e];
@@ -96,9 +102,11 @@ void iniciar() {
     gen[e].maskDir  = 1UL << c.pinDir;
     gen[e].dirActual = +1;
     gen[e].dirDeseada = +1;
-    if (c.pinFault < 34) pinMode(c.pinFault, INPUT_PULLUP);  // 34–39 no tienen pull-up interno
-    else                 pinMode(c.pinFault, INPUT);
-    pinMode(c.pinFin, INPUT_PULLUP);               //* topes NC a GND: en reposo LOW
+    if (c.pinFault != PIN_NC) {
+      if (c.pinFault < 34) pinMode(c.pinFault, INPUT_PULLUP);  // 34–39 no tienen pull-up interno
+      else                 pinMode(c.pinFault, INPUT);
+    }
+    if (c.pinFin != PIN_NC) pinMode(c.pinFin, INPUT_PULLUP);   //* topes NC a GND: en reposo LOW
   }
 
   const uint32_t periodo_us = 1000000UL / F_TICK_HZ;

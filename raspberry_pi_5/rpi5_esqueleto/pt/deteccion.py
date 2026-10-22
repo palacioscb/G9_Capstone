@@ -208,3 +208,90 @@ class DetectorLaserRojo:
 
         conf = float(np.clip((pico - self.V_NEUTRO) / 127.0, 0.0, 1.0))
         return Resultado(True, u_real, w_real, pico, area, conf)
+
+
+# ===========================================================================
+class DetectorLuz:
+    """Detector de una FUENTE DE LUZ (flash del celular) en el plano Y. Viene de
+    mi_proyecto_camara/luz_2.py (Detector, buscar_zona y centroide_local), con la misma
+    interfaz que los otros detectores y la validación PI-6 (área y salto).
+    """
+    #* Pasos (luz_2): salida rápida si el máximo no llega al umbral -> suma por bloques b×b y
+    #* mejor bloque (un píxel caliente aislado no gana a una mancha) -> centroide ponderado con
+    #* pesos (Y − 0,7·pico) alrededor del bloque. En SEGUIMIENTO busca primero en una ventana
+    #* alrededor de la última detección y, si no encuentra, en el cuadro completo.
+    #! Cualquier luz blanca intensa compite (lámparas, ventanas, reflejos): este detector no
+    #! distingue color. Para el láser rojo usar DetectorLaserRojo (--detector rojo).
+
+    def __init__(self, p_luz):
+        self.p = p_luz
+        self.ultimo = None
+        self._idx = np.arange(4096, dtype=np.int64)
+
+    def reiniciar(self):
+        self.ultimo = None
+
+    def procesar(self, img, usar_ventana=True, v=None):
+        t0 = time.perf_counter()
+        r = self._procesar(img, usar_ventana)
+        r.t_proc_ms = (time.perf_counter() - t0) * 1e3
+        if r.valido:
+            self.ultimo = (r.u, r.w)
+        return r
+
+    def _centroide(self, y, cx, cy):
+        p = self.p
+        h, w = y.shape
+        r = p.radio_centroide
+        x0, x1 = max(cx - r, 0), min(cx + r + 1, w)
+        y0, y1 = max(cy - r, 0), min(cy + r + 1, h)
+        v = y[y0:y1, x0:x1]
+        pico = int(v.max())
+        if pico < p.umbral:
+            return None
+        q = v.astype(np.int16) - int(p.frac_corte * pico)
+        np.maximum(q, 0, out=q)
+        area = int(np.count_nonzero(q))
+        s = int(q.sum())
+        if area < p.min_pix or s <= 0:
+            return None
+        u = x0 + float(q.sum(axis=0) @ self._idx[: x1 - x0]) / s
+        ww = y0 + float(q.sum(axis=1) @ self._idx[: y1 - y0]) / s
+        return u, ww, pico, area
+
+    def _buscar(self, y, b, x_off=0, y_off=0, y_completa=None):
+        if int(y.max()) < self.p.umbral:
+            return None
+        h, w = y.shape
+        hb, wb = h // b, w // b
+        if hb == 0 or wb == 0:
+            return None
+        suma = y[: hb * b, : wb * b].reshape(hb, b, wb, b).sum(axis=(1, 3), dtype=np.uint32)
+        by, bx = divmod(int(suma.argmax()), wb)
+        #* El centroide se calcula en la imagen completa (la mancha puede salirse de la ventana).
+        return self._centroide(y_completa, x_off + bx * b + b // 2, y_off + by * b + b // 2)
+
+    def _procesar(self, img, usar_ventana):
+        p = self.p
+        H, W = img.shape
+        res = None
+        if usar_ventana and self.ultimo is not None:
+            m = p.ventana_seguimiento // 2
+            uc, wc = int(round(self.ultimo[0])), int(round(self.ultimo[1]))
+            x0, x1 = max(0, uc - m), min(W, uc + m)
+            y0, y1 = max(0, wc - m), min(H, wc + m)
+            res = self._buscar(img[y0:y1, x0:x1], p.bloque_ventana, x0, y0, img)
+        if res is None:
+            res = self._buscar(img, p.bloque_global, 0, 0, img)
+        if res is None:
+            return Resultado(False, pico=int(img.max()), motivo="sin luz sobre umbral")
+        u, w, pico, area = res
+        if not (p.area_min <= area <= p.area_max):
+            return Resultado(False, u, w, pico, area, motivo=f"área {area} fuera de rango")
+        if self.ultimo is not None:
+            salto = float(np.hypot(u - self.ultimo[0], w - self.ultimo[1]))
+            if salto > p.salto_max_px:
+                return Resultado(False, u, w, pico, area, motivo=f"salto {salto:.0f} px")
+        conf = float(np.clip((pico - p.umbral) / max(255 - p.umbral, 1) * 0.5 + 0.5, 0.0, 1.0))
+        return Resultado(True, u, w, pico, area, conf)
+

@@ -2,6 +2,31 @@
 
 IEE2913 Diseño Eléctrico (Capstone), Grupo 9 · Plataforma pan-tilt de seguimiento visual · 21 de octubre de 2026
 
+## 0. Actualización 22-10: cableado real en el laboratorio
+
+**El firmware y la RPi ya están ajustados a este cableado.** Las secciones 3 y 4 muestran la propuesta original (pines distintos, USB, nFAULT, topes y M0..M2) y quedan como referencia para la PCB.
+
+| Señal | ESP32 (placa S/V/G) | Otro extremo |
+|---|---|---|
+| nENABLE / STEP / DIR pan (azimut) | GPIO13 / GPIO12 / GPIO14 (S) | DRV8825 pan |
+| nENABLE / STEP / DIR tilt (elevación) | GPIO27 / GPIO26 / GPIO25 (S) | DRV8825 tilt |
+| AS5600 pan SDA / SCL / VCC | GPIO21 (S) / GPIO22 (S) / V del GPIO23 | AS5600 pan (+ GND a una G) |
+| AS5600 tilt SDA / SCL / VCC | GPIO18 (S) / GPIO19 (S) / V del GPIO5 | AS5600 tilt (+ GND a una G) |
+| UART RX0 (GPIO3) | RX (S) | RPi pin 8 = GPIO14 (TXD) |
+| UART TX0 (GPIO1) | TX (S) | RPi pin 10 = GPIO15 (RXD) |
+| GND | G (fila del GPIO23) | RPi GND: **pin 6** (o 9, 14, 20, 25) |
+
+Verificaciones antes de energizar:
+
+1. **GND de la RPi.** En el header de la RPi, la fila exterior es 2-4-6-8-10-12. Contando desde el pin 2, la columna 3 es el pin 6 (GND), la 4 es el pin 8 (TXD), la 5 es el pin 10 (RXD) y la 6 es el pin 12 (GPIO18, **no es GND**). Confirmar con el comando `pinout` en la RPi.
+2. **Tensión de la fila V.** Medir V–G de la placa de expansión: debe dar **3,3 V** (puente de la placa). Con 5 V, los pull-ups del AS5600 llevan SDA/SCL a 5 V, y el ESP32 no lo tolera.
+3. **GND común del DRV8825.** El GND lógico de cada DRV8825 debe estar unido al G del ESP32. SLEEP y RESET van a 3V3.
+4. **USB del ESP32 desconectado mientras corre el lazo.** RX0/TX0 es el mismo UART del chip USB. Alimentar el ESP32 por la placa de expansión. Para cargar firmware, desconectar el cable de RX0, o mover los dos cables a GPIO16 (RX2) / GPIO17 (TX2): el firmware escucha en ambos.
+5. **Micropasos.**
+   - M0..M2 no van al ESP32. Sueltos, el DRV8825 trabaja en paso completo (1,8°).
+   - Para 1/16 (0,1125°, recomendado), llevar M2 a 3V3.
+   - En la consola: `m 1` o `m 16`, según lo que tenga el driver. La prueba `t` lo verifica.
+
 ## 1. Qué se integró
 
 Un único programa en la Raspberry Pi cierra el lazo de la cámara, y un firmware nuevo en el ESP32 cierra el lazo de posición de cada eje con los AS5600. Con eso queda implementado el diagrama de control del informe.
