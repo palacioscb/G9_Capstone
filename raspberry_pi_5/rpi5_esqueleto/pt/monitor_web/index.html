@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monitor pan-tilt G9</title>
+<!-- MON-1 / MON-2. Sin dependencias externas: funciona aunque la red no tenga internet. -->
+<style>
+:root {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --surface-2: #222220;
+  --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s7: #9085e9;
+  --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb; --surface-2: #f1f0ec;
+    --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,0.10);
+    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s7: #6250d6;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink);
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+.num { font-variant-numeric: tabular-nums; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 12px 16px;
+  border-bottom: 1px solid var(--ring); position: sticky; top: 0; background: var(--page); z-index: 5; }
+header h1 { font-size: 16px; margin: 0 8px 0 0; font-weight: 650; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+  font-weight: 600; font-size: 13px; border: 1px solid var(--ring); background: var(--surface-2); }
+.pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.pill[data-s="good"] .dot { background: var(--good); }
+.pill[data-s="warning"] .dot { background: var(--warning); }
+.pill[data-s="serious"] .dot { background: var(--serious); }
+.pill[data-s="critical"] .dot { background: var(--critical); }
+.pill[data-s="critical"] { border-color: var(--critical); }
+.sep { flex: 1; }
+.meta { color: var(--ink-2); font-size: 13px; }
+main { padding: 16px; display: grid; gap: 16px; max-width: 1500px; margin: 0 auto; }
+.top { display: grid; grid-template-columns: minmax(280px, 520px) 1fr; gap: 16px; align-items: start; }
+@media (max-width: 900px) { .top { grid-template-columns: 1fr; } }
+.card { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 12px 14px; min-width: 0; }
+.card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+  margin: 0 0 8px; font-weight: 600; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; }
+.kv .k { color: var(--ink-2); }
+.kv .v { text-align: right; font-weight: 600; }
+.big { font-size: 20px; font-weight: 650; }
+.sub { color: var(--ink-2); font-size: 13px; }
+#img-wrap { position: relative; width: 100%; aspect-ratio: 4 / 3; background: #000; border-radius: 6px; overflow: hidden; }
+#img-cv { width: 100%; height: 100%; display: block; }
+#img-msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: #c3c2b7; font-size: 13px; text-align: center; padding: 16px; }
+.leg { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--ink-2); margin-top: 8px; }
+.leg i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+.bar { position: relative; height: 10px; border-radius: 5px; background: var(--surface-2); border: 1px solid var(--ring); margin: 4px 0 2px; }
+.bar .m { position: absolute; top: -3px; width: 3px; height: 14px; border-radius: 2px; transform: translateX(-1px); }
+.bar .z { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--axis); left: 50%; }
+.bar .fill { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
+.limrow { margin-bottom: 8px; }
+.limrow .t { display: flex; justify-content: space-between; font-size: 13px; }
+.flags { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; font-size: 13px; }
+.flag { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+.flag b { width: 16px; height: 16px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; color: #fff; background: var(--surface-2); border: 1px solid var(--ring); }
+.flag.on { color: var(--ink); font-weight: 600; }
+.flag.on b { background: var(--critical); border-color: var(--critical); }
+.charts-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 8px; }
+.charts-head h2 { margin: 0; }
+.seg { display: inline-flex; border: 1px solid var(--ring); border-radius: 8px; overflow: hidden; }
+.seg button, .btn { background: var(--surface-2); color: var(--ink); border: 0; padding: 5px 10px; font: inherit; font-size: 13px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--ring); }
+.seg button[aria-pressed="true"] { background: var(--s1); color: #fff; }
+.btn { border: 1px solid var(--ring); border-radius: 8px; text-decoration: none; display: inline-block; }
+.btn[aria-disabled="true"] { opacity: .45; pointer-events: none; }
+.grid6 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 700px) { .grid6 { grid-template-columns: 1fr; } }
+.ch { position: relative; }
+.ch .ttl { font-size: 13px; font-weight: 600; margin-bottom: 2px; display: flex; justify-content: space-between; }
+.ch .ttl span { color: var(--muted); font-weight: 400; }
+.ch canvas { width: 100%; height: 150px; display: block; }
+.tip { position: absolute; pointer-events: none; background: var(--surface-2); border: 1px solid var(--ring);
+  border-radius: 6px; padding: 6px 8px; font-size: 12px; white-space: nowrap; display: none; z-index: 3;
+  box-shadow: 0 2px 8px rgba(0,0,0,.25); }
+.tip i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+.bottom { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 16px; }
+@media (max-width: 1000px) { .bottom { grid-template-columns: 1fr; } }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+td, th { padding: 3px 6px; text-align: left; border-bottom: 1px solid var(--grid); }
+th { color: var(--muted); font-weight: 600; }
+pre { margin: 0; font-size: 12px; white-space: pre-wrap; color: var(--ink-2); max-height: 170px; overflow: auto; }
+.exp { display: flex; flex-direction: column; gap: 8px; }
+.exp .sub { margin-top: -4px; overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Pan-tilt G9 · Monitor</h1>
+  <span class="pill" id="p-con" data-s="warning"><span class="dot"></span><span id="t-con">Conectando…</span></span>
+  <span class="pill" id="p-modo"><span class="dot"></span>Supervisor: <span id="t-modo">—</span></span>
+  <span class="pill" id="p-esp"><span class="dot"></span>ESP32: <span id="t-esp">—</span></span>
+  <span class="pill" id="p-mot"><span class="dot"></span><span id="t-mot">—</span></span>
+  <span class="sep"></span>
+  <span class="meta num" id="t-meta">—</span>
+</header>
+
+<main>
+  <section class="top">
+    <div class="card">
+      <h2>Cámara</h2>
+      <div id="img-wrap"><canvas id="img-cv" width="640" height="480"></canvas><div id="img-msg">Esperando imagen…</div></div>
+      <div class="leg">
+        <span><i style="background:var(--muted)"></i>centro de la imagen (referencia de centrado)</span>
+        <span><i style="background:var(--s3)"></i>objeto detectado</span>
+        <span><i style="background:var(--s2)"></i>θ_ref enviada</span>
+      </div>
+    </div>
+
+    <div class="tiles">
+      <div class="card"><h2>Detección</h2>
+        <div class="big" id="d-est">—</div>
+        <div class="sub" id="d-mot">—</div>
+        <div class="kv num" style="margin-top:6px">
+          <span class="k">Detección últimos 2 s</span><span class="v" id="d-pct">—</span>
+          <span class="k">Pico / área</span><span class="v" id="d-pico">—</span>
+          <span class="k">Confianza</span><span class="v" id="d-conf">—</span>
+          <span class="k">Sin medición</span><span class="v" id="d-tsm">—</span>
+        </div>
+      </div>
+      <div class="card"><h2>Posición del objeto</h2>
+        <div class="kv num">
+          <span class="k">Imagen (u, w)</span><span class="v" id="o-px">—</span>
+          <span class="k">Mundo pan</span><span class="v" id="o-pan">—</span>
+          <span class="k">Mundo tilt</span><span class="v" id="o-tilt">—</span>
+        </div>
+      </div>
+      <div class="card"><h2>Error de centrado</h2>
+        <div class="kv num">
+          <span class="k">Pan</span><span class="v" id="e-pan">—</span>
+          <span class="k">Tilt</span><span class="v" id="e-tilt">—</span>
+          <span class="k">Horizontal / vertical</span><span class="v" id="e-px">—</span>
+        </div>
+      </div>
+      <div class="card"><h2>Ángulo por eje (AS5600)</h2>
+        <div class="kv num">
+          <span class="k">Pan θ_med</span><span class="v" id="a-pan">—</span>
+          <span class="k">Tilt θ_med</span><span class="v" id="a-tilt">—</span>
+        </div>
+      </div>
+      <div class="card"><h2>Referencia de centrado</h2>
+        <div class="kv num">
+          <span class="k">Centro imagen</span><span class="v" id="r-c">—</span>
+          <span class="k">θ_ref pan</span><span class="v" id="r-pan">—</span>
+          <span class="k">θ_ref tilt</span><span class="v" id="r-tilt">—</span>
+        </div>
+      </div>
+      <div class="card"><h2>Señal de control (ω_cmd)</h2>
+        <div class="limrow"><div class="t"><span>Pan</span><span class="num" id="u-pan">—</span></div>
+          <div class="bar"><div class="z"></div><div class="fill" id="u-pan-b" style="background:var(--s4)"></div></div></div>
+        <div class="limrow"><div class="t"><span>Tilt</span><span class="num" id="u-tilt">—</span></div>
+          <div class="bar"><div class="z"></div><div class="fill" id="u-tilt-b" style="background:var(--s4)"></div></div></div>
+        <div class="sub num" id="u-max">—</div>
+      </div>
+      <div class="card"><h2>Límites de recorrido</h2>
+        <div class="limrow"><div class="t"><span>Pan</span><span id="l-pan-t">—</span></div>
+          <div class="bar"><div class="m" id="l-pan-r" style="background:var(--s2)"></div><div class="m" id="l-pan-m" style="background:var(--s1)"></div></div>
+          <div class="t sub num"><span id="l-pan-lo"></span><span id="l-pan-hi"></span></div></div>
+        <div class="limrow"><div class="t"><span>Tilt</span><span id="l-tilt-t">—</span></div>
+          <div class="bar"><div class="m" id="l-tilt-r" style="background:var(--s2)"></div><div class="m" id="l-tilt-m" style="background:var(--s1)"></div></div>
+          <div class="t sub num"><span id="l-tilt-lo"></span><span id="l-tilt-hi"></span></div></div>
+      </div>
+      <div class="card"><h2>Fallas</h2>
+        <div class="flags" id="fl"></div>
+      </div>
+      <div class="card"><h2>Modo de operación</h2>
+        <div class="kv">
+          <span class="k">Fuente</span><span class="v" id="m-fuente">—</span>
+          <span class="k">Enlace</span><span class="v" id="m-enlace">—</span>
+          <span class="k">Motores</span><span class="v" id="m-mot">—</span>
+          <span class="k">Feedforward ω</span><span class="v" id="m-ff">—</span>
+          <span class="k">Detector</span><span class="v" id="m-det">—</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="charts-head">
+      <h2>Variables de seguimiento</h2>
+      <div class="seg" id="win" role="group" aria-label="Ventana de tiempo">
+        <button data-s="5">5 s</button><button data-s="10" aria-pressed="true">10 s</button><button data-s="30">30 s</button><button data-s="60">60 s</button>
+      </div>
+      <button class="btn" id="pausa">Pausar</button>
+      <div class="leg" style="margin:0">
+        <span><i style="background:var(--s1)"></i>θ_med (medido)</span>
+        <span><i style="background:var(--s2)"></i>θ_ref (enviada)</span>
+        <span><i style="background:var(--s3)"></i>θ_obj (objeto en el mundo)</span>
+      </div>
+    </div>
+    <div class="grid6" id="charts"></div>
+    <div class="sub" style="margin-top:6px">Cada punto es un cuadro de la cámara. Los tramos sin línea son cuadros sin detección.</div>
+  </section>
+
+  <section class="bottom">
+    <div class="card"><h2>Bitácora del supervisor</h2>
+      <table><thead><tr><th>t [s]</th><th>Desde</th><th>Hacia</th><th>Causa</th></tr></thead><tbody id="bit"></tbody></table>
+    </div>
+    <div class="card"><h2>Mensajes del ESP32</h2><pre id="txt">—</pre></div>
+    <div class="card exp"><h2>Exportar (MON-2)</h2>
+      <a class="btn" href="/historial.csv">Historial por cuadro (CSV)</a>
+      <div class="sub" id="x-hist">Últimos segundos en memoria, una fila por cuadro.</div>
+      <a class="btn" href="/telemetria.csv" id="x-tel">Telemetría ESP32 a 200 Hz (CSV)</a>
+      <div class="sub">θ_med, θ_ref y ω_cmd del lazo interno.</div>
+      <a class="btn" href="/registro.csv">Registro completo de la corrida (CSV)</a>
+      <div class="sub num" id="x-reg">—</div>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+let CFG = null, IX = {};
+const MAXS = 60;                         // segundos guardados en el navegador
+let D = null;                            // columnas -> arreglos
+let EST = {};
+let ventana = 10, pausado = false, tUlt = 0, sucio = true, hoverT = null;
+
+const FALLAS = [[0x01,"nFAULT pan"],[0x02,"nFAULT tilt"],[0x04,"Sensor pan"],[0x08,"Sensor tilt"],
+  [0x10,"Límite / tope pan"],[0x20,"Límite / tope tilt"],[0x40,"Pérdida de pasos"],[0x80,"Watchdog enlace"]];
+const ESTADO_SUP = {SEGUIMIENTO:"good", BUSQUEDA:"warning", PERDIDA:"warning", MODO_SEGURO:"critical",
+  HOMING:"neutral", INICIALIZACION:"neutral", DETENIDO:"neutral", FINALIZADO:"neutral"};
+const ESTADO_ESP = {LAZO:"good", RETENCION:"warning", ABIERTO:"serious", DESHABILITADO:"neutral", FALLA:"critical"};
+
+const f = (x, d=2, u="") => (x === null || x === undefined || Number.isNaN(x)) ? "—" : (x >= 0 ? "+" : "−") + Math.abs(x).toFixed(d) + u;
+const fu = (x, d=1, u="") => (x === null || x === undefined) ? "—" : x.toFixed(d) + u;
+const last = c => { const a = D[c]; for (let i = a.length - 1; i >= Math.max(0, a.length - 3); i--) if (a[i] !== null) return a[i]; return null; };
+const pill = (id, s) => { $(id).dataset.s = s || "neutral"; };
+
+// ---- gráficos (small multiples: filas = variable, columnas = eje) ---------------------------
+const CHARTS = [
+  {t:"Ángulo pan", u:"°", s:[["pan_med","--s1","θ_med"],["pan_ref","--s2","θ_ref"],["pan_obj","--s3","θ_obj"]]},
+  {t:"Ángulo tilt", u:"°", s:[["tilt_med","--s1","θ_med"],["tilt_ref","--s2","θ_ref"],["tilt_obj","--s3","θ_obj"]]},
+  {t:"Error de centrado pan", u:"°", s:[["err_pan","--s7","error"]], cero:true},
+  {t:"Error de centrado tilt", u:"°", s:[["err_tilt","--s7","error"]], cero:true},
+  {t:"Señal de control pan (ω_cmd)", u:"°/s", s:[["w_pan","--s4","ω_cmd"]], cero:true},
+  {t:"Señal de control tilt (ω_cmd)", u:"°/s", s:[["w_tilt","--s4","ω_cmd"]], cero:true},
+];
+function armarGraficos() {
+  const cont = $("charts");
+  CHARTS.forEach((c, i) => {
+    const d = document.createElement("div"); d.className = "ch";
+    d.innerHTML = `<div class="ttl">${c.t}<span>${c.u}</span></div><canvas></canvas><div class="tip"></div>`;
+    cont.appendChild(d);
+    c.cv = d.querySelector("canvas"); c.tip = d.querySelector(".tip"); c.box = d;
+    c.cv.addEventListener("mousemove", ev => { hoverT = tDesdeX(c, ev.offsetX); sucio = true; });
+    c.cv.addEventListener("mouseleave", () => { hoverT = null; sucio = true; });
+  });
+}
+function rangoT() {
+  const t = D.t; if (!t.length) return [0, ventana];
+  const t1 = t[t.length - 1]; return [t1 - ventana, t1];
+}
+const PAD = {l: 46, r: 8, t: 6, b: 18};
+function tDesdeX(c, x) { const [t0, t1] = rangoT(); const w = c.cv.clientWidth - PAD.l - PAD.r; return t0 + (x - PAD.l) / w * (t1 - t0); }
+function buscar(t, x) { let lo = 0, hi = t.length - 1; while (lo < hi) { const m = (lo + hi) >> 1; if (t[m] < x) lo = m + 1; else hi = m; } return lo; }
+function ticks(lo, hi, n) {
+  const span = hi - lo || 1, paso0 = span / n, p10 = Math.pow(10, Math.floor(Math.log10(paso0)));
+  const paso = [1, 2, 2.5, 5, 10].map(m => m * p10).find(p => p >= paso0) || p10 * 10;
+  const out = []; for (let v = Math.ceil(lo / paso) * paso; v <= hi + 1e-9; v += paso) out.push(+v.toFixed(10));
+  return out;
+}
+function dibujar(c) {
+  const cv = c.cv, dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+  const t = D.t, [t0, t1] = rangoT(), i0 = Math.max(buscar(t, t0) - 1, 0), n = t.length;
+  let lo = Infinity, hi = -Infinity;
+  for (const [col] of c.s) { const a = D[col]; for (let i = i0; i < n; i++) { const v = a[i]; if (v !== null) { if (v < lo) lo = v; if (v > hi) hi = v; } } }
+  if (c.cero) { lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
+  if (!isFinite(lo)) { lo = -1; hi = 1; }
+  const m = Math.max((hi - lo) * 0.08, c.u === "°/s" ? 2 : 0.2); lo -= m; hi += m;
+  const X = v => PAD.l + (v - t0) / (t1 - t0) * (W - PAD.l - PAD.r);
+  const Y = v => PAD.t + (hi - v) / (hi - lo) * (H - PAD.t - PAD.b);
+  g.font = "11px system-ui, sans-serif"; g.textBaseline = "middle";
+  g.strokeStyle = css("--grid"); g.fillStyle = css("--muted"); g.lineWidth = 1;
+  for (const v of ticks(lo, hi, 4)) { const y = Math.round(Y(v)) + .5; g.beginPath(); g.moveTo(PAD.l, y); g.lineTo(W - PAD.r, y); g.stroke();
+    g.textAlign = "right"; g.fillText(Math.abs(v) < 1e-9 ? "0" : String(+v.toPrecision(4)), PAD.l - 6, y); }
+  g.textAlign = "center"; g.textBaseline = "alphabetic";
+  for (const v of ticks(t0, t1, 5)) { if (v < 0) continue; g.fillText(v.toFixed(v % 1 ? 1 : 0) + " s", X(v), H - 4); }
+  if (c.cero && lo < 0 && hi > 0) { g.strokeStyle = css("--axis"); g.beginPath(); g.moveTo(PAD.l, Math.round(Y(0)) + .5); g.lineTo(W - PAD.r, Math.round(Y(0)) + .5); g.stroke(); }
+  g.save(); g.beginPath(); g.rect(PAD.l, 0, W - PAD.l - PAD.r, H); g.clip();
+  for (const [col, color, , ] of c.s) {
+    const a = D[col]; g.strokeStyle = css(color); g.lineWidth = 2; g.lineJoin = "round"; g.beginPath(); let pen = false;
+    for (let i = i0; i < n; i++) { const v = a[i]; if (v === null) { pen = false; continue; } const x = X(t[i]), y = Y(v); if (pen) g.lineTo(x, y); else { g.moveTo(x, y); pen = true; } }
+    g.stroke();
+  }
+  g.restore();
+  // crosshair + tooltip sincronizados entre los seis gráficos
+  if (hoverT !== null && n) {
+    const i = Math.min(buscar(t, hoverT), n - 1), x = X(t[i]);
+    if (x >= PAD.l && x <= W - PAD.r) {
+      g.strokeStyle = css("--ink-2"); g.lineWidth = 1; g.beginPath(); g.moveTo(Math.round(x) + .5, PAD.t); g.lineTo(Math.round(x) + .5, H - PAD.b); g.stroke();
+      let html = `<div class="num" style="color:var(--muted)">t = ${t[i].toFixed(3)} s · cuadro ${D.k[i]}</div>`;
+      for (const [col, color, nom] of c.s) {
+        const v = D[col][i]; if (v !== null) { g.fillStyle = css(color); g.beginPath(); g.arc(x, Y(v), 4, 0, 7); g.fill(); g.strokeStyle = css("--surface"); g.lineWidth = 2; g.stroke(); }
+        html += `<div class="num"><i style="background:var(${color})"></i>${nom}: <b>${v === null ? "—" : v.toFixed(c.u === "°/s" ? 1 : 3) + " " + c.u}</b></div>`;
+      }
+      c.tip.innerHTML = html; c.tip.style.display = "block";
+      const bw = c.box.clientWidth, tw = c.tip.offsetWidth;
+      c.tip.style.left = Math.min(Math.max(x + 12, 0), bw - tw) + "px"; c.tip.style.top = "22px";
+    } else c.tip.style.display = "none";
+  } else c.tip.style.display = "none";
+}
+
+// ---- imagen con superposición -----------------------------------------------------------------
+const IMG = new Image(); let imgLista = false, imgPidiendo = false;
+function pedirImagen() {
+  if (!CFG || !CFG.imagen_hz || imgPidiendo || document.hidden) return;
+  imgPidiendo = true;
+  fetch("/imagen.jpg?n=" + Date.now(), {cache: "no-store"}).then(r => r.status === 200 ? r.blob() : null).then(b => {
+    if (!b) { imgPidiendo = false; return; }
+    const u = URL.createObjectURL(b);
+    IMG.onload = () => { URL.revokeObjectURL(u); imgLista = true; imgPidiendo = false; $("img-msg").style.display = "none"; dibujarImagen(); };
+    IMG.onerror = () => { URL.revokeObjectURL(u); imgPidiendo = false; };
+    IMG.src = u;
+  }).catch(() => { imgPidiendo = false; });
+}
+function dibujarImagen() {
+  const cv = $("img-cv"), g = cv.getContext("2d");
+  if (!CFG) return;
+  if (cv.width !== CFG.ancho) { cv.width = CFG.ancho; cv.height = CFG.alto; }
+  if (imgLista) g.drawImage(IMG, 0, 0, cv.width, cv.height); else { g.fillStyle = "#000"; g.fillRect(0, 0, cv.width, cv.height); }
+  const s = cv.width / 640;
+  g.lineWidth = 2 * s;
+  g.strokeStyle = "#c3c2b7"; const cx = CFG.cx, cy = CFG.cy, L = 14 * s;
+  g.beginPath(); g.moveTo(cx - L, cy); g.lineTo(cx + L, cy); g.moveTo(cx, cy - L); g.lineTo(cx, cy + L); g.stroke();
+  if (D && D.t.length) {
+    const i = D.t.length - 1;
+    if (D.valido[i] === 1 && D.u[i] !== null) {
+      g.strokeStyle = css("--s3"); g.beginPath(); g.arc(D.u[i], D.w[i], 12 * s, 0, 7); g.stroke();
+      g.globalAlpha = .6; g.lineWidth = 1 * s; g.beginPath(); g.moveTo(cx, cy); g.lineTo(D.u[i], D.w[i]); g.stroke(); g.globalAlpha = 1; g.lineWidth = 2 * s;
+    }
+    if (EST.ref_px) { const [x, y] = EST.ref_px, k = 7 * s; g.strokeStyle = css("--s2");
+      g.beginPath(); g.moveTo(x - k, y - k); g.lineTo(x + k, y + k); g.moveTo(x + k, y - k); g.lineTo(x - k, y + k); g.stroke(); }
+  }
+}
+
+// ---- tarjetas -----------------------------------------------------------------------------------
+function barraLim(eje, med, ref, lim, falla) {
+  const [a, b] = lim, pos = v => Math.min(Math.max((v - a) / (b - a), 0), 1) * 100 + "%";
+  $(`l-${eje}-lo`).textContent = a + "°"; $(`l-${eje}-hi`).textContent = b + "°";
+  $(`l-${eje}-m`).style.display = med === null ? "none" : "block"; if (med !== null) $(`l-${eje}-m`).style.left = pos(med);
+  $(`l-${eje}-r`).style.display = ref === null ? "none" : "block"; if (ref !== null) $(`l-${eje}-r`).style.left = pos(ref);
+  const t = $(`l-${eje}-t`);
+  if (falla) { t.innerHTML = '<span style="color:var(--critical);font-weight:700">✕ LÍMITE O TOPE</span>'; }
+  else if (med !== null && (med - a < 5 || b - med < 5)) { t.innerHTML = '<span style="color:var(--warning);font-weight:600">▲ cerca del límite</span>'; }
+  else t.innerHTML = '<span style="color:var(--ink-2)">✓ libre</span>';
+}
+function barraU(eje, v) {
+  const max = CFG.omega_max || 180, b = $(`u-${eje}-b`);
+  $(`u-${eje}`).textContent = f(v, 1, " °/s");
+  if (v === null) { b.style.width = "0"; return; }
+  const p = Math.min(Math.abs(v) / max, 1) * 50;
+  b.style.width = p + "%"; b.style.left = v >= 0 ? "50%" : (50 - p) + "%";
+}
+function tarjetas() {
+  if (!D || !D.t.length) return;
+  const e = EST;
+  $("t-modo").textContent = e.modo || "—"; pill("p-modo", ESTADO_SUP[e.modo]);
+  $("t-esp").textContent = e.esp32 || (CFG.enlace === "nulo" ? "sin enlace" : "sin telemetría");
+  pill("p-esp", e.esp32 ? ESTADO_ESP[e.esp32] : (CFG.enlace === "nulo" ? "neutral" : "critical"));
+  $("t-mot").textContent = CFG.habilitar ? "Motores HABILITADOS" : "Motores deshabilitados (observar)"; pill("p-mot", CFG.habilitar ? "serious" : "neutral");
+  $("t-meta").textContent = `${fu(e.fps, 0)} fps · ${fu(e.lat_ms, 1)} ms latencia · cuadro ${e.k ?? "—"} · t ${fu(e.t, 1)} s`;
+
+  $("d-est").innerHTML = e.detectado ? '<span style="color:var(--good)">✓</span> Detectado' : '<span style="color:var(--warning)">▲</span> Sin objetivo';
+  $("d-mot").textContent = "Motivo: " + (e.motivo || "—");
+  $("d-pct").textContent = fu(e.det_pct, 0, " %");
+  $("d-pico").textContent = (e.pico ?? "—") + " / " + (e.area ?? "—");
+  $("d-conf").textContent = fu(e.conf, 2);
+  $("d-tsm").textContent = fu(e.t_sin_med, 2, " s");
+
+  const u = last("u"), w = last("w");
+  $("o-px").textContent = (u === null || D.valido[D.t.length - 1] !== 1) ? "—" : `${u.toFixed(1)}, ${w.toFixed(1)} px`;
+  $("o-pan").textContent = f(last("pan_obj"), 2, "°"); $("o-tilt").textContent = f(last("tilt_obj"), 2, "°");
+  $("e-pan").textContent = f(last("err_pan"), 3, "°"); $("e-tilt").textContent = f(last("err_tilt"), 3, "°");
+  const ex = last("ex_px"), ey = last("ey_px");
+  $("e-px").textContent = ex === null ? "—" : `${f(ex, 1)} / ${f(ey, 1)} px`;
+  const pm = last("pan_med"), tm = last("tilt_med");
+  $("a-pan").textContent = f(pm, 3, "°"); $("a-tilt").textContent = f(tm, 3, "°");
+  $("r-c").textContent = `${CFG.cx.toFixed(1)}, ${CFG.cy.toFixed(1)} px`;
+  const rp = last("pan_ref"), rt = last("tilt_ref");
+  $("r-pan").textContent = f(rp, 3, "°"); $("r-tilt").textContent = f(rt, 3, "°");
+  barraU("pan", last("w_pan")); barraU("tilt", last("w_tilt"));
+  $("u-max").textContent = `Barra a escala de ω_max = ±${CFG.omega_max || 180} °/s`;
+  const fb = e.fallas || 0;
+  barraLim("pan", pm, rp, CFG.lim_pan, fb & 0x10); barraLim("tilt", tm, rt, CFG.lim_tilt, fb & 0x20);
+  $("fl").innerHTML = FALLAS.map(([b, n]) => `<div class="flag ${fb & b ? "on" : ""}"><b>${fb & b ? "✕" : "✓"}</b>${n}</div>`).join("")
+    + `<div class="flag ${(CFG.enlace !== "nulo" && e.enlace_ok === false && e.modo !== "FINALIZADO") ? "on" : ""}"><b>${(CFG.enlace !== "nulo" && e.enlace_ok === false && e.modo !== "FINALIZADO") ? "✕" : "✓"}</b>Enlace RPi–ESP32</div>`
+    + `<div class="flag ${e.modo === "MODO_SEGURO" ? "on" : ""}"><b>${e.modo === "MODO_SEGURO" ? "✕" : "✓"}</b>Modo seguro</div>`;
+  $("bit").innerHTML = (e.bitacora || []).slice().reverse().map(r => `<tr><td class="num">${r[0].toFixed(2)}</td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td></tr>`).join("") || '<tr><td colspan="4">—</td></tr>';
+  $("txt").textContent = (e.textos && e.textos.length) ? e.textos.join("\n") : "—";
+}
+
+// ---- datos ---------------------------------------------------------------------------------------
+function agregar(filas) {
+  const nombres = CFG.columnas.map(c => c.nombre), max = Math.round(MAXS * (CFG.fps || 80));
+  for (const r of filas) for (let j = 0; j < nombres.length; j++) D[nombres[j]].push(r[j]);
+  const exceso = D.t.length - max;
+  if (exceso > 200) for (const k in D) D[k].splice(0, exceso);
+}
+function conectar() {
+  const es = new EventSource("/flujo");
+  es.onmessage = ev => {
+    const m = JSON.parse(ev.data);
+    tUlt = performance.now();
+    if (m.e) EST = m.e;
+    if (!pausado && m.f && m.f.length) agregar(m.f);
+    sucio = true;
+  };
+  es.onerror = () => { $("t-con").textContent = "Desconectado — reintentando"; pill("p-con", "critical"); };
+}
+function bucle() {
+  const dt = performance.now() - tUlt;
+  if (tUlt) {
+    if (EST.modo === "FINALIZADO") { $("t-con").textContent = "Corrida terminada (" + (EST.motivo_fin || "") + ")"; pill("p-con", "neutral"); }
+    else if (dt < 1000) { $("t-con").textContent = pausado ? "En vivo (gráficos en pausa)" : "En vivo"; pill("p-con", "good"); }
+    else { $("t-con").textContent = `Sin datos hace ${(dt / 1000).toFixed(0)} s`; pill("p-con", "warning"); }
+  }
+  if (sucio && D) { sucio = false; for (const c of CHARTS) dibujar(c); tarjetas(); dibujarImagen(); }
+  requestAnimationFrame(bucle);
+}
+
+fetch("/config").then(r => r.json()).then(cfg => {
+  CFG = cfg; D = {}; for (const c of CFG.columnas) D[c.nombre] = [];
+  $("m-fuente").textContent = CFG.fuente; $("m-enlace").textContent = CFG.enlace;
+  $("m-mot").textContent = CFG.habilitar ? "habilitados" : "deshabilitados";
+  $("m-ff").textContent = CFG.feedforward ? "sí" : "no"; $("m-det").textContent = CFG.detector;
+  $("x-reg").textContent = CFG.registro || "";
+  $("x-hist").textContent = `Últimos ${Math.round(CFG.segundos)} s en memoria, una fila por cuadro (${CFG.fps} Hz).`;
+  if (!CFG.telemetria) { $("x-tel").setAttribute("aria-disabled", "true"); $("x-tel").textContent = "Telemetría ESP32 (no disponible en este modo)"; }
+  if (!CFG.imagen_hz) $("img-msg").textContent = "Imagen desactivada (--monitor-imagen-hz 0, o falta OpenCV en la RPi).";
+  else setInterval(pedirImagen, 1000 / CFG.imagen_hz);
+  armarGraficos(); conectar(); requestAnimationFrame(bucle);
+});
+$("win").addEventListener("click", ev => {
+  const b = ev.target.closest("button"); if (!b) return;
+  ventana = +b.dataset.s; for (const x of $("win").children) x.setAttribute("aria-pressed", x === b ? "true" : "false"); sucio = true;
+});
+$("pausa").addEventListener("click", () => { pausado = !pausado; $("pausa").textContent = pausado ? "Reanudar" : "Pausar"; sucio = true; });
+window.addEventListener("resize", () => { sucio = true; });
+</script>
+</body>
+</html>

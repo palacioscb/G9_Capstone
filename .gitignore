@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.pyc
+
+# Salidas de las corridas (se copian con scp o desde el monitor, no van al repositorio)
+registros/
+
+# PlatformIO
+.pio/
