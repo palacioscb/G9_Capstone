@@ -38,7 +38,82 @@ class Resultado:
     motivo: str = ""            # por qué se rechazó (diagnóstico PI-8)
     t_proc_ms: float = 0.0
 
+class DetectorAvionRojo:
+    #* Detector de avión rojo optimizado con plano V (YUV420)
+    def __init__(self, p):
+        self.p = p.deteccion_avion
+        self.ultimo = None
+        self._idx_cache = {}
 
+    def reiniciar(self):
+        self.ultimo = None
+
+    def _get_idx(self, length):
+        if length not in self._idx_cache:
+            self._idx_cache[length] = np.arange(length, dtype=np.int64)
+        return self._idx_cache[length]
+
+    def _centroide_rojo(self, v, cx, cy, r):
+        h, w = v.shape
+        x0, x1 = max(cx - r, 0), min(cx + r, w)
+        y0, y1 = max(cy - r, 0), min(cy + r, h)
+        win = v[y0:y1, x0:x1]
+        if win.size == 0 or int(win.max()) < self.p.v_umbral:
+            return None
+        p = win.astype(np.int16) - self.p.v_umbral
+        np.maximum(p, 0, out=p)
+        n = int(np.count_nonzero(p))
+        if n < self.p.min_pix:
+            return None
+        s = int(p.sum())
+        if s == 0:
+            return None
+        idx_x = self._get_idx(x1 - x0)
+        idx_y = self._get_idx(y1 - y0)
+        mx = x0 + int(p.sum(axis=0) @ idx_x) / s
+        my = y0 + int(p.sum(axis=1) @ idx_y) / s
+        return mx, my, n
+
+    def _buscar_global(self, v):
+        if int(v.max()) < self.p.v_umbral:
+            return None
+        h, w = v.shape
+        b = self.p.b_global
+        hb, wb = h // b, w // b
+        if hb == 0 or wb == 0:
+            return None
+        p = v.astype(np.int16) - self.p.v_umbral
+        np.maximum(p, 0, out=p)
+        suma = p[: hb * b, : wb * b].reshape(hb, b, wb, b).sum(axis=(1, 3), dtype=np.int32)
+        by, bx = divmod(int(suma.argmax()), wb)
+        res = self._centroide_rojo(v, bx * b + b // 2, by * b + b // 2, self.p.roi_r)
+        if res is None:
+            return None
+        return self._centroide_rojo(v, int(res[0]), int(res[1]), self.p.roi_r)
+
+    def procesar(self, img, usar_ventana=True, v=None):
+        t0 = time.perf_counter_ns()
+        if v is None:
+            h, w_img = img.shape
+            v = img[h + h // 4 : h + h // 2, :w_img].reshape(h // 2, w_img // 2)
+
+        res = None
+        if usar_ventana and self.ultimo is not None:
+            res = self._centroide_rojo(v, self.ultimo[0], self.ultimo[1], self.p.roi_r)
+        if res is None:
+            res = self._buscar_global(v)
+
+        t1 = time.perf_counter_ns()
+        t_proc_ms = (t1 - t0) / 1e6
+
+        if res is None:
+            self.ultimo = None
+            return Resultado(valido=False, u=float("nan"), w=float("nan"), pico=0.0, area=0, confianza=0.0, motivo="sin_deteccion", t_proc_ms=t_proc_ms)
+
+        self.ultimo = (int(res[0]), int(res[1]))
+        u_full = 2.0 * res[0] + 0.5
+        w_full = 2.0 * res[1] + 0.5
+        return Resultado(valido=True, u=u_full, w=w_full, pico=float(res[2]), area=int(res[2]), confianza=1.0, motivo="ok", t_proc_ms=t_proc_ms)
 class DetectorLaser:
     def __init__(self, p_det):
         self.p = p_det

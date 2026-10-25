@@ -31,7 +31,7 @@ import numpy as np
 
 from pt.parametros import Parametros
 from pt.geometria import Geometria
-from pt.deteccion import DetectorLaser, DetectorLaserRojo, DetectorLuz
+from pt.deteccion import DetectorLaser, DetectorLaserRojo, DetectorLuz, DetectorAvionRojo
 from pt.supervisor import Supervisor, Estado
 from pt.control import ReferenciaVisual
 from pt.enlace import EnlaceNulo, EnlaceTrama, EnlaceSimulado
@@ -57,6 +57,7 @@ def argumentos():
     ap.add_argument("--lampara", action="store_true", help="fuente sintética: agrega una lámpara blanca fija")
     ap.add_argument("--ventana", action="store_true", help="muestra la imagen (requiere OpenCV y pantalla)")
     ap.add_argument("--registro", default="registros", help="carpeta de salida del CSV")
+    ap.add_argument("--detector", choices=["rojo", "luz", "brillo", "avion"], default="rojo", help="tipo de detector")
     #* MON-1 / MON-2: tablero web en la red local, en un hilo aparte (sin monitor HDMI).
     red = ap.add_argument_group("monitoreo por red (MON-1 / MON-2)")
     red.add_argument("--monitor", action="store_true",
@@ -255,6 +256,8 @@ def main():
         det = DetectorLaserRojo(P.deteccion_roja)
     elif a.detector == "luz":
         det = DetectorLuz(P.deteccion_luz)
+    elif a.detector == "avion":
+        det = DetectorAvionRojo(P)
     else:
         det = DetectorLaser(P.deteccion)
     ref = ReferenciaVisual(P, geo)

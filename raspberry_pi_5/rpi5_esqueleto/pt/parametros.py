@@ -58,6 +58,14 @@ class Deteccion:
     area_min: int = 2             # área válida de la mancha [px]
     area_max: int = 400
     salto_max_px: float = 80.0    # salto máximo entre cuadros consecutivos válidos [px]
+@dataclass
+class DeteccionAvion:
+    #* Parámetros del detector de avión rojo basado en plano V
+    v_umbral: int = 155
+    min_pix: int = 12
+    roi_r: int = 40
+    b_global: int = 4
+
 
 
 @dataclass
@@ -176,3 +184,4 @@ class Parametros:
     lazo: LazoExterno = field(default_factory=LazoExterno)
     actuador: Actuador = field(default_factory=Actuador)
     enlace: Enlace = field(default_factory=Enlace)
+    deteccion_avion: DeteccionAvion = field(default_factory=DeteccionAvion)

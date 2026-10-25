@@ -340,6 +340,15 @@ def test_detector_luz_flash_grande_y_pixel_caliente():
     vacia = np.full((H, W), 30, np.uint8)
     assert not det.procesar(vacia).valido
 
+def test_detector_avion():
+    from pt.parametros import Parametros
+    from pt.deteccion import DetectorAvionRojo
+    P = Parametros()
+    det = DetectorAvionRojo(P)
+    v_dummy = np.zeros((240, 320), dtype=np.uint8)
+    v_dummy[120, 160] = 200  # Valor sobre el umbral simulado
+    res = det.procesar(v_dummy, usar_ventana=False, v=v_dummy)
+    assert res is not None
 
 def test_monitor_red_sirve_y_exporta():
     """MON-1 / MON-2: el servidor arranca, entrega config, flujo (sin NaN) y CSV."""
