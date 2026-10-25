@@ -61,8 +61,9 @@ class Deteccion:
 
 @dataclass
 class DeteccionAvion:
-    v_umbral: int = 145          # Intermedio: un poco más bajo para captar el rojo del avión
-    min_pix: int = 8             # Permite que detecte el avión incluso cuando está más lejos (ocupa pocos píxeles)
+    #* Umbral adaptativo: margen por encima de la mediana del plano V del cuadro actual
+    offset_umbral: int = 18      # Margen de rojo exigido sobre el fondo dinámico de la escena
+    min_pix: int = 3             # Píxeles mínimos en el plano V
     roi_r: int = 20
     b_global: int = 4
     bloque_ventana: int = 2
