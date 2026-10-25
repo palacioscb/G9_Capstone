@@ -61,14 +61,14 @@ class Deteccion:
 
 @dataclass
 class DeteccionAvion:
-    v_umbral: int = 150          # Subido para ignorar ruido de fondo y tonalidades débiles
-    min_pix: int = 15            # Exige que el avión ocupe un área mínima de píxeles reales
+    v_umbral: int = 100          # Intermedio: un poco más bajo para captar el rojo del avión
+    min_pix: int = 8             # Permite que detecte el avión incluso cuando está más lejos (ocupa pocos píxeles)
     roi_r: int = 20
     b_global: int = 4
     bloque_ventana: int = 2
     bloque_global: int = 8
     ventana_seguimiento: int = 80
-    salto_max_px: float = 80.0   # Si un cuadro a otro salta más que esto, se descarta por ser ruido
+    salto_max_px: float = 80.0
 
 @dataclass
 class DeteccionLuz:
