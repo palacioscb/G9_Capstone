@@ -61,7 +61,7 @@ class Deteccion:
 @dataclass
 class DeteccionAvion:
     #* Parámetros del detector de avión rojo basado en plano V
-    v_umbral: int = 155
+    v_umbral: int = 120
     min_pix: int = 12
     roi_r: int = 40
     b_global: int = 4
