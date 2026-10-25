@@ -45,8 +45,8 @@ def argumentos():
     ap.add_argument("--fps", type=float, help="sobrescribe parametros.Captura.fps")
     ap.add_argument("--exposicion", type=int, help="µs; fija la exposición")
     ap.add_argument("--ganancia", type=float, help="ganancia analógica (luz_2.py usa 2,0)")
-    ap.add_argument("--detector", choices=["rojo", "luz", "brillo"], default="rojo",
-                    help="rojo = láser rojo (plano V); luz = flash del celular (de luz_2.py); brillo = el original")
+    ap.add_argument("--detector", choices=["rojo", "luz", "brillo", "avion"], default="rojo",
+                    help="rojo = láser rojo (plano V); luz = flash del celular; brillo = original; avion = detector de avion")
     ap.add_argument("--enlace", choices=["nulo", "simulado", "trama"], default="nulo",
                     help="nulo: sin actuadores; simulado: ESP32 y ejes simulados; trama: ESP32 real")
     ap.add_argument("--puerto", help="por defecto /dev/ttyAMA0 (UART del header, pines 8 y 10)")
@@ -57,7 +57,6 @@ def argumentos():
     ap.add_argument("--lampara", action="store_true", help="fuente sintética: agrega una lámpara blanca fija")
     ap.add_argument("--ventana", action="store_true", help="muestra la imagen (requiere OpenCV y pantalla)")
     ap.add_argument("--registro", default="registros", help="carpeta de salida del CSV")
-    ap.add_argument("--detector", choices=["rojo", "luz", "brillo", "avion"], default="rojo", help="tipo de detector")
     #* MON-1 / MON-2: tablero web en la red local, en un hilo aparte (sin monitor HDMI).
     red = ap.add_argument_group("monitoreo por red (MON-1 / MON-2)")
     red.add_argument("--monitor", action="store_true",
