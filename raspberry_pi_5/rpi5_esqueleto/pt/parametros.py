@@ -61,7 +61,7 @@ class Deteccion:
 
 @dataclass
 class DeteccionAvion:
-    v_umbral: int = 100          # Intermedio: un poco más bajo para captar el rojo del avión
+    v_umbral: int = 145          # Intermedio: un poco más bajo para captar el rojo del avión
     min_pix: int = 8             # Permite que detecte el avión incluso cuando está más lejos (ocupa pocos píxeles)
     roi_r: int = 20
     b_global: int = 4
