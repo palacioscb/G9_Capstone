@@ -77,10 +77,14 @@ class DetectorAvionRojo:
         x0, x1 = max(cx - r, 0), min(cx + r + 1, w)
         y0, y1 = max(cy - r, 0), min(cy + r + 1, h)
         win = v_mat[y0:y1, x0:x1]
-        if win.size == 0 or int(win.max()) < p.v_umbral:
+        if win.size == 0:
+            return None
+            
+        pico = int(win.max())
+        # Filtro estricto: el punto máximo debe superar el umbral por un margen saludable (evita ruido plano)
+        if pico < p.v_umbral + 12:
             return None
         
-        # Ponderación basada en cuánto supera el umbral de rojo
         q = win.astype(np.int16) - p.v_umbral
         np.maximum(q, 0, out=q)
         area = int(np.count_nonzero(q))
@@ -92,10 +96,8 @@ class DetectorAvionRojo:
         u_v = x0 + float(q.sum(axis=0) @ self._idx[: x1 - x0]) / s
         w_v = y0 + float(q.sum(axis=1) @ self._idx[: y1 - y0]) / s
         
-        # Escalamos de coordenadas del plano V (320x240) a imagen completa (640x480)
         u_full = u_v * 2.0
         w_full = w_v * 2.0
-        pico = int(win.max())
         return u_full, w_full, pico, area
 
     def _buscar(self, v_mat, b, x_off=0, y_off=0, v_completa=None):

@@ -58,18 +58,17 @@ class Deteccion:
     area_min: int = 2             # área válida de la mancha [px]
     area_max: int = 400
     salto_max_px: float = 80.0    # salto máximo entre cuadros consecutivos válidos [px]
-@dataclass
 
+@dataclass
 class DeteccionAvion:
-    v_umbral: int = 138
-    min_pix: int = 6
-    roi_r: int = 20                # Radio equivalente en el plano V (la mitad de la imagen completa)
+    v_umbral: int = 150          # Subido para ignorar ruido de fondo y tonalidades débiles
+    min_pix: int = 15            # Exige que el avión ocupe un área mínima de píxeles reales
+    roi_r: int = 20
     b_global: int = 4
     bloque_ventana: int = 2
     bloque_global: int = 8
-    ventana_seguimiento: int = 80  # Tamaño de la ROI en el plano V
-    salto_max_px: float = 150.0    # Límite de desplazamiento lógico entre cuadros
-
+    ventana_seguimiento: int = 80
+    salto_max_px: float = 80.0   # Si un cuadro a otro salta más que esto, se descarta por ser ruido
 
 @dataclass
 class DeteccionLuz:
