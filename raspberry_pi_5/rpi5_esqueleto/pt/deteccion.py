@@ -39,7 +39,9 @@ class Resultado:
     t_proc_ms: float = 0.0
 
 class DetectorAvionRojo:
-    """Detector de un AVIÓN ROJO con umbral adaptativo basado en la mediana del plano V."""
+    """Detector de un AVIÓN ROJO en el plano V (Cr) de YUV420,
+    con umbral fijo y estructura robusta imitando a DetectorLuz.
+    """
     def __init__(self, p_avion):
         self.p = p_avion.deteccion_avion
         self.ultimo = None
@@ -51,10 +53,10 @@ class DetectorAvionRojo:
     def procesar(self, img, usar_ventana=True, v=None):
         t0 = time.perf_counter()
         
-        # Extracción del plano V del búfer YUV420 de Picamera2
+        # Extracción segura y robusta del plano V del búfer YUV420 de Picamera2
         if v is None:
             h_total, stride = img.shape
-            h = 480
+            h = 480  # Altura nominal
             v_start_row = h + h // 4
             v_end_row = h + h // 2
             v = img[v_start_row:v_end_row, :stride][:, :640 // 2]
@@ -65,7 +67,7 @@ class DetectorAvionRojo:
             self.ultimo = (r.u, r.w)
         return r
 
-    def _centroide(self, v_mat, cx, cy, umbral_dinamico):
+    def _centroide(self, v_mat, cx, cy):
         p = self.p
         h, w = v_mat.shape
         r = p.roi_r
@@ -76,11 +78,10 @@ class DetectorAvionRojo:
             return None
             
         pico = int(win.max())
-        if pico < umbral_dinamico:
+        if pico < p.v_umbral:
             return None
         
-        # Ponderación usando el umbral dinámico adaptado a la escena
-        q = win.astype(np.int16) - int(umbral_dinamico)
+        q = win.astype(np.int16) - p.v_umbral
         np.maximum(q, 0, out=q)
         area = int(np.count_nonzero(q))
         s = int(q.sum())
@@ -95,8 +96,8 @@ class DetectorAvionRojo:
         w_full = w_v * 2.0
         return u_full, w_full, pico, area
 
-    def _buscar(self, v_mat, b, umbral_dinamico, x_off=0, y_off=0, v_completa=None):
-        if int(v_mat.max()) < umbral_dinamico:
+    def _buscar(self, v_mat, b, x_off=0, y_off=0, v_completa=None):
+        if int(v_mat.max()) < self.p.v_umbral:
             return None
         h, w = v_mat.shape
         hb, wb = h // b, w // b
@@ -104,30 +105,25 @@ class DetectorAvionRojo:
             return None
         suma = v_mat[: hb * b, : wb * b].reshape(hb, b, wb, b).sum(axis=(1, 3), dtype=np.uint32)
         by, bx = divmod(int(suma.argmax()), wb)
-        return self._centroide(v_completa, x_off + bx * b + b // 2, y_off + by * b + b // 2, umbral_dinamico)
+        return self._centroide(v_completa, x_off + bx * b + b // 2, y_off + by * b + b // 2)
 
     def _procesar(self, v, usar_ventana):
         p = self.p
         H, W = v.shape
-        
-        # -- AQUÍ ESTÁ LA MAGIA ADAPTATIVA --
-        # Calculamos la mediana del plano V de este cuadro exacto para conocer el fondo actual
-        mediana_fondo = float(np.median(v))
-        umbral_dinamico = mediana_fondo + p.offset_umbral
-        
         res = None
+        
         if usar_ventana and self.ultimo is not None:
             m = p.ventana_seguimiento // 2
             uc, wc = int(round(self.ultimo[0] / 2.0)), int(round(self.ultimo[1] / 2.0))
             x0, x1 = max(0, uc - m), min(W, uc + m)
             y0, y1 = max(0, wc - m), min(H, wc + m)
-            res = self._buscar(v[y0:y1, x0:x1], p.bloque_ventana, umbral_dinamico, x0, y0, v)
+            res = self._buscar(v[y0:y1, x0:x1], p.bloque_ventana, x0, y0, v)
             
         if res is None:
-            res = self._buscar(v, p.bloque_global, umbral_dinamico, 0, 0, v)
+            res = self._buscar(v, p.bloque_global, 0, 0, v)
             
         if res is None:
-            return Resultado(False, pico=int(v.max()), motivo=f"fondo={mediana_fondo:.1f} sin avion")
+            return Resultado(False, pico=int(v.max()), motivo="sin avion rojo sobre umbral")
             
         u, w, pico, area = res
         
@@ -136,7 +132,7 @@ class DetectorAvionRojo:
             if salto > p.salto_max_px:
                 return Resultado(False, u, w, pico, area, motivo=f"salto {salto:.0f} px")
                 
-        conf = float(np.clip((pico - umbral_dinamico) / max(255 - umbral_dinamico, 1) * 0.5 + 0.5, 0.0, 1.0))
+        conf = float(np.clip((pico - p.v_umbral) / max(255 - p.v_umbral, 1) * 0.5 + 0.5, 0.0, 1.0))
         return Resultado(True, u, w, pico, area, conf)
 class DetectorLaser:
     def __init__(self, p_det):

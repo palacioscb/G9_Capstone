@@ -61,8 +61,7 @@ class Deteccion:
 
 @dataclass
 class DeteccionAvion:
-    #* Umbral adaptativo: margen por encima de la mediana del plano V del cuadro actual
-    offset_umbral: int = 18      # Margen de rojo exigido sobre el fondo dinámico de la escena
+    v_umbral: int = 140          # Umbral fijo de seguridad
     min_pix: int = 3             # Píxeles mínimos en el plano V
     roi_r: int = 20
     b_global: int = 4
