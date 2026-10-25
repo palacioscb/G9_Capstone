@@ -93,9 +93,25 @@ class DetectorAvionRojo:
 
     def procesar(self, img, usar_ventana=True, v=None):
         t0 = time.perf_counter_ns()
+
         if v is None:
-            h, w_img = img.shape
-            v = img[h + h // 4 : h + h // 2, :w_img].reshape(h // 2, w_img // 2)
+            # Si img es el frame completo YUV420 plano
+            # Para YUV420: alto total en memoria es H * 1.5
+            # H_img y W_img son la resolución nominal (ej. 480x640)
+            h_total, stride = img.shape
+            h = int(h_total / 1.5)
+            w = stride  # En Picamera2, img.shape[1] representa el stride de memoria
+
+            # El plano V empieza en la fila (H + H/4) y ocupa H/2 filas
+            filas_v_inicio = h + h // 4
+            filas_v_fin = h + h // 2
+            v = img[filas_v_inicio:filas_v_fin, :stride]
+            
+            # Si el stride es mayor al ancho (ej. 640), recortamos al ancho útil de la imagen en V (W//2)
+            # Para 640x480, el plano V es de 320 de ancho
+            w_real = h * 4 // 3  # Asumiendo relación 4:3 (o la resolución nominal)
+            w_v = w_real // 2
+            v = v[:, :w_v]
 
         res = None
         if usar_ventana and self.ultimo is not None:
@@ -108,12 +124,30 @@ class DetectorAvionRojo:
 
         if res is None:
             self.ultimo = None
-            return Resultado(valido=False, u=float("nan"), w=float("nan"), pico=0.0, area=0, confianza=0.0, motivo="sin_deteccion", t_proc_ms=t_proc_ms)
+            return Resultado(
+                valido=False,
+                u=float("nan"),
+                w=float("nan"),
+                pico=0.0,
+                area=0,
+                confianza=0.0,
+                motivo="sin_deteccion",
+                t_proc_ms=t_proc_ms,
+            )
 
         self.ultimo = (int(res[0]), int(res[1]))
         u_full = 2.0 * res[0] + 0.5
         w_full = 2.0 * res[1] + 0.5
-        return Resultado(valido=True, u=u_full, w=w_full, pico=float(res[2]), area=int(res[2]), confianza=1.0, motivo="ok", t_proc_ms=t_proc_ms)
+        return Resultado(
+            valido=True,
+            u=u_full,
+            w=w_full,
+            pico=float(res[2]),
+            area=int(res[2]),
+            confianza=1.0,
+            motivo="ok",
+            t_proc_ms=t_proc_ms,
+        )
 class DetectorLaser:
     def __init__(self, p_det):
         self.p = p_det
