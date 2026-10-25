@@ -61,7 +61,7 @@ class Deteccion:
 
 @dataclass
 class DeteccionAvion:
-    v_umbral: int = 140          # Umbral fijo de seguridad
+    v_umbral: int = 150          # Umbral fijo de seguridad
     min_pix: int = 3             # Píxeles mínimos en el plano V
     roi_r: int = 20
     b_global: int = 4
