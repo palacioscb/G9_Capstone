@@ -59,13 +59,16 @@ class Deteccion:
     area_max: int = 400
     salto_max_px: float = 80.0    # salto máximo entre cuadros consecutivos válidos [px]
 @dataclass
-class DeteccionAvion:
-    #* Parámetros del detector de avión rojo basado en plano V
-    v_umbral: int = 100
-    min_pix: int = 40
-    roi_r: int = 40
-    b_global: int = 4
 
+class DeteccionAvion:
+    v_umbral: int = 138
+    min_pix: int = 6
+    roi_r: int = 20                # Radio equivalente en el plano V (la mitad de la imagen completa)
+    b_global: int = 4
+    bloque_ventana: int = 2
+    bloque_global: int = 8
+    ventana_seguimiento: int = 80  # Tamaño de la ROI en el plano V
+    salto_max_px: float = 150.0    # Límite de desplazamiento lógico entre cuadros
 
 
 @dataclass

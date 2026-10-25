@@ -39,115 +39,112 @@ class Resultado:
     t_proc_ms: float = 0.0
 
 class DetectorAvionRojo:
-    #* Detector de avión rojo optimizado con plano V (YUV420)
-    def __init__(self, p):
-        self.p = p.deteccion_avion
+    """Detector de un AVIÓN ROJO en el plano V (Cr) de YUV420,
+    diseñado con la misma estructura robusta y limpia de DetectorLuz.
+    """
+    def __init__(self, p_avion):
+        self.p = p_avion.deteccion_avion
         self.ultimo = None
-        self._idx_cache = {}
+        self._idx = np.arange(4096, dtype=np.int64)
 
     def reiniciar(self):
         self.ultimo = None
 
-    def _get_idx(self, length):
-        if length not in self._idx_cache:
-            self._idx_cache[length] = np.arange(length, dtype=np.int64)
-        return self._idx_cache[length]
+    def procesar(self, img, usar_ventana=True, v=None):
+        t0 = time.perf_counter()
+        
+        # Extracción segura y robusta del plano V del búfer YUV420 de Picamera2
+        if v is None:
+            h_total, stride = img.shape
+            h = 480  # Altura nominal
+            v_start_row = h + h // 4
+            v_end_row = h + h // 2
+            # Tomamos el plano V y recortamos al ancho útil del plano V (w // 2 = 320)
+            v = img[v_start_row:v_end_row, :stride][:, :640 // 2]
 
-    def _centroide_rojo(self, v, cx, cy, r):
-        h, w = v.shape
-        x0, x1 = max(cx - r, 0), min(cx + r, w)
-        y0, y1 = max(cy - r, 0), min(cy + r, h)
-        win = v[y0:y1, x0:x1]
-        if win.size == 0 or int(win.max()) < self.p.v_umbral:
-            return None
-        p = win.astype(np.int16) - self.p.v_umbral
-        np.maximum(p, 0, out=p)
-        n = int(np.count_nonzero(p))
-        if n < self.p.min_pix:
-            return None
-        s = int(p.sum())
-        if s == 0:
-            return None
-        idx_x = self._get_idx(x1 - x0)
-        idx_y = self._get_idx(y1 - y0)
-        mx = x0 + int(p.sum(axis=0) @ idx_x) / s
-        my = y0 + int(p.sum(axis=1) @ idx_y) / s
-        return mx, my, n
+        r = self._procesar(v, usar_ventana)
+        r.t_proc_ms = (time.perf_counter() - t0) * 1e3
+        if r.valido:
+            # Como trabajamos en el plano V (mitad de resolución), 
+            # escalamos las coordenadas (u, w) a la imagen completa de 640x480
+            self.ultimo = (r.u, r.w)
+        return r
 
-    def _buscar_global(self, v):
-        if int(v.max()) < self.p.v_umbral:
+    def _centroide(self, v_mat, cx, cy):
+        p = self.p
+        h, w = v_mat.shape
+        r = p.roi_r
+        x0, x1 = max(cx - r, 0), min(cx + r + 1, w)
+        y0, y1 = max(cy - r, 0), min(cy + r + 1, h)
+        win = v_mat[y0:y1, x0:x1]
+        if win.size == 0 or int(win.max()) < p.v_umbral:
             return None
-        h, w = v.shape
-        b = self.p.b_global
+        
+        # Ponderación basada en cuánto supera el umbral de rojo
+        q = win.astype(np.int16) - p.v_umbral
+        np.maximum(q, 0, out=q)
+        area = int(np.count_nonzero(q))
+        s = int(q.sum())
+        
+        if area < p.min_pix or s <= 0:
+            return None
+            
+        u_v = x0 + float(q.sum(axis=0) @ self._idx[: x1 - x0]) / s
+        w_v = y0 + float(q.sum(axis=1) @ self._idx[: y1 - y0]) / s
+        
+        # Escalamos de coordenadas del plano V (320x240) a imagen completa (640x480)
+        u_full = u_v * 2.0
+        w_full = w_v * 2.0
+        pico = int(win.max())
+        return u_full, w_full, pico, area
+
+    def _buscar(self, v_mat, b, x_off=0, y_off=0, v_completa=None):
+        if int(v_mat.max()) < self.p.v_umbral:
+            return None
+        h, w = v_mat.shape
         hb, wb = h // b, w // b
         if hb == 0 or wb == 0:
             return None
-        p = v.astype(np.int16) - self.p.v_umbral
-        np.maximum(p, 0, out=p)
-        suma = p[: hb * b, : wb * b].reshape(hb, b, wb, b).sum(axis=(1, 3), dtype=np.int32)
+        suma = v_mat[: hb * b, : wb * b].reshape(hb, b, wb, b).sum(axis=(1, 3), dtype=np.uint32)
         by, bx = divmod(int(suma.argmax()), wb)
-        res = self._centroide_rojo(v, bx * b + b // 2, by * b + b // 2, self.p.roi_r)
-        if res is None:
-            return None
-        return self._centroide_rojo(v, int(res[0]), int(res[1]), self.p.roi_r)
+        return self._centroide(v_completa, x_off + bx * b + b // 2, y_off + by * b + b // 2)
 
-    def procesar(self, img, usar_ventana=True, v=None):
-        t0 = time.perf_counter_ns()
-
-        if v is None:
-            # Si img es el frame completo YUV420 plano
-            # Para YUV420: alto total en memoria es H * 1.5
-            # H_img y W_img son la resolución nominal (ej. 480x640)
-            h_total, stride = img.shape
-            h = int(h_total / 1.5)
-            w = stride  # En Picamera2, img.shape[1] representa el stride de memoria
-
-            # El plano V empieza en la fila (H + H/4) y ocupa H/2 filas
-            filas_v_inicio = h + h // 4
-            filas_v_fin = h + h // 2
-            v = img[filas_v_inicio:filas_v_fin, :stride]
-            
-            # Si el stride es mayor al ancho (ej. 640), recortamos al ancho útil de la imagen en V (W//2)
-            # Para 640x480, el plano V es de 320 de ancho
-            w_real = h * 4 // 3  # Asumiendo relación 4:3 (o la resolución nominal)
-            w_v = w_real // 2
-            v = v[:, :w_v]
-
+    def _procesar(self, v, usar_ventana):
+        p = self.p
+        H, W = v.shape
         res = None
+        
+        # En SEGUIMIENTO busca en una ventana alrededor de la última posición conocida
         if usar_ventana and self.ultimo is not None:
-            res = self._centroide_rojo(v, self.ultimo[0], self.ultimo[1], self.p.roi_r)
+            m = p.ventana_seguimiento // 2
+            # Como self.ultimo está en coordenadas de imagen completa, lo pasamos al plano V (/2)
+            uc, wc = int(round(self.ultimo[0] / 2.0)), int(round(self.ultimo[1] / 2.0))
+            x0, x1 = max(0, uc - m), min(W, uc + m)
+            y0, y1 = max(0, wc - m), min(H, wc + m)
+            res = self._buscar(v[y0:y1, x0:x1], p.bloque_ventana, x0, y0, v)
+            
+        # Si no hay ventana o falla, realiza búsqueda global en todo el plano V
         if res is None:
-            res = self._buscar_global(v)
-
-        t1 = time.perf_counter_ns()
-        t_proc_ms = (t1 - t0) / 1e6
-
+            res = self._buscar(v, p.bloque_global, 0, 0, v)
+            
         if res is None:
-            self.ultimo = None
-            return Resultado(
-                valido=False,
-                u=float("nan"),
-                w=float("nan"),
-                pico=0.0,
-                area=0,
-                confianza=0.0,
-                motivo="sin_deteccion",
-                t_proc_ms=t_proc_ms,
-            )
-
-        self.ultimo = (int(res[0]), int(res[1]))
-        u_full = 2.0 * res[0] + 0.5
-        w_full = 2.0 * res[1] + 0.5
-        return Resultado(
-            valido=True,
-            u=u_full,
-            w=w_full,
-            pico=float(res[2]),
-            area=int(res[2]),
-            confianza=1.0,
-            motivo="ok",
-            t_proc_ms=t_proc_ms,
-        )
+            return Resultado(False, pico=int(v.max()), motivo="sin avion rojo sobre umbral")
+            
+        u, w, pico, area = res
+        
+        # Validación opcional de área si está definida en parámetros
+        if hasattr(p, 'area_min') and hasattr(p, 'area_max'):
+            if not (p.area_min <= area <= p.area_max):
+                return Resultado(False, u, w, pico, area, motivo=f"área {area} fuera de rango")
+                
+        # Validación de salto máximo para evitar saltos irreales de un cuadro a otro
+        if self.ultimo is not None:
+            salto = float(np.hypot(u - self.ultimo[0], w - self.ultimo[1]))
+            if hasattr(p, 'salto_max_px') and salto > p.salto_max_px:
+                return Resultado(False, u, w, pico, area, motivo=f"salto {salto:.0f} px")
+                
+        conf = float(np.clip((pico - p.v_umbral) / max(255 - p.v_umbral, 1) * 0.5 + 0.5, 0.0, 1.0))
+        return Resultado(True, u, w, pico, area, conf)
 class DetectorLaser:
     def __init__(self, p_det):
         self.p = p_det
