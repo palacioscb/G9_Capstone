@@ -61,7 +61,7 @@ class Deteccion:
 
 @dataclass
 class DeteccionAvion:
-    v_umbral: int = 150          # Umbral fijo de seguridad
+    v_umbral: int = 170          # Umbral fijo de seguridad
     min_pix: int = 3             # Píxeles mínimos en el plano V
     roi_r: int = 20
     b_global: int = 4
@@ -92,7 +92,7 @@ class DeteccionLuz:
 @dataclass
 class DeteccionRoja:
     #* Detector por COLOR (plano V), traído de mi_proyecto_camara/laser_op.py.
-    v_umbral: int = 170           # pico mínimo del plano V (128 = neutro, 255 = rojo puro)
+    v_umbral: int = 150           # pico mínimo del plano V (128 = neutro, 255 = rojo puro)
     y_min: int = 60               # brillo mínimo del punto en el plano Y (0 = desactivar)
     frac_corte: float = 0.7       # pesos del centroide: sólo lo que supera 128 + 0,7·(pico − 128)
     bloque: int = 4               # bloque de la búsqueda global en el plano V (= 8 px reales)
