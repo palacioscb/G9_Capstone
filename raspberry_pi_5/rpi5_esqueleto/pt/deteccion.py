@@ -38,7 +38,102 @@ class Resultado:
     motivo: str = ""            # por qué se rechazó (diagnóstico PI-8)
     t_proc_ms: float = 0.0
 
+class DetectorAvionRojo:
+    """Detector de un AVIÓN ROJO en el plano V (Cr) de YUV420,
+    con umbral fijo y estructura robusta imitando a DetectorLuz.
+    """
+    def __init__(self, p_avion):
+        self.p = p_avion.deteccion_avion
+        self.ultimo = None
+        self._idx = np.arange(4096, dtype=np.int64)
 
+    def reiniciar(self):
+        self.ultimo = None
+
+    def procesar(self, img, usar_ventana=True, v=None):
+        t0 = time.perf_counter()
+        
+        # Extracción segura y robusta del plano V del búfer YUV420 de Picamera2
+        if v is None:
+            h_total, stride = img.shape
+            h = 480  # Altura nominal
+            v_start_row = h + h // 4
+            v_end_row = h + h // 2
+            v = img[v_start_row:v_end_row, :stride][:, :640 // 2]
+
+        r = self._procesar(v, usar_ventana)
+        r.t_proc_ms = (time.perf_counter() - t0) * 1e3
+        if r.valido:
+            self.ultimo = (r.u, r.w)
+        return r
+
+    def _centroide(self, v_mat, cx, cy):
+        p = self.p
+        h, w = v_mat.shape
+        r = p.roi_r
+        x0, x1 = max(cx - r, 0), min(cx + r + 1, w)
+        y0, y1 = max(cy - r, 0), min(cy + r + 1, h)
+        win = v_mat[y0:y1, x0:x1]
+        if win.size == 0:
+            return None
+            
+        pico = int(win.max())
+        if pico < p.v_umbral:
+            return None
+        
+        q = win.astype(np.int16) - p.v_umbral
+        np.maximum(q, 0, out=q)
+        area = int(np.count_nonzero(q))
+        s = int(q.sum())
+        
+        if area < p.min_pix or s <= 0:
+            return None
+            
+        u_v = x0 + float(q.sum(axis=0) @ self._idx[: x1 - x0]) / s
+        w_v = y0 + float(q.sum(axis=1) @ self._idx[: y1 - y0]) / s
+        
+        u_full = u_v * 2.0
+        w_full = w_v * 2.0
+        return u_full, w_full, pico, area
+
+    def _buscar(self, v_mat, b, x_off=0, y_off=0, v_completa=None):
+        if int(v_mat.max()) < self.p.v_umbral:
+            return None
+        h, w = v_mat.shape
+        hb, wb = h // b, w // b
+        if hb == 0 or wb == 0:
+            return None
+        suma = v_mat[: hb * b, : wb * b].reshape(hb, b, wb, b).sum(axis=(1, 3), dtype=np.uint32)
+        by, bx = divmod(int(suma.argmax()), wb)
+        return self._centroide(v_completa, x_off + bx * b + b // 2, y_off + by * b + b // 2)
+
+    def _procesar(self, v, usar_ventana):
+        p = self.p
+        H, W = v.shape
+        res = None
+        
+        if usar_ventana and self.ultimo is not None:
+            m = p.ventana_seguimiento // 2
+            uc, wc = int(round(self.ultimo[0] / 2.0)), int(round(self.ultimo[1] / 2.0))
+            x0, x1 = max(0, uc - m), min(W, uc + m)
+            y0, y1 = max(0, wc - m), min(H, wc + m)
+            res = self._buscar(v[y0:y1, x0:x1], p.bloque_ventana, x0, y0, v)
+            
+        if res is None:
+            res = self._buscar(v, p.bloque_global, 0, 0, v)
+            
+        if res is None:
+            return Resultado(False, pico=int(v.max()), motivo="sin avion rojo sobre umbral")
+            
+        u, w, pico, area = res
+        
+        if self.ultimo is not None:
+            salto = float(np.hypot(u - self.ultimo[0], w - self.ultimo[1]))
+            if salto > p.salto_max_px:
+                return Resultado(False, u, w, pico, area, motivo=f"salto {salto:.0f} px")
+                
+        conf = float(np.clip((pico - p.v_umbral) / max(255 - p.v_umbral, 1) * 0.5 + 0.5, 0.0, 1.0))
+        return Resultado(True, u, w, pico, area, conf)
 class DetectorLaser:
     def __init__(self, p_det):
         self.p = p_det

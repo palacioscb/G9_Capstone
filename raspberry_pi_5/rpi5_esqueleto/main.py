@@ -31,7 +31,7 @@ import numpy as np
 
 from pt.parametros import Parametros
 from pt.geometria import Geometria
-from pt.deteccion import DetectorLaser, DetectorLaserRojo, DetectorLuz
+from pt.deteccion import DetectorLaser, DetectorLaserRojo, DetectorLuz, DetectorAvionRojo
 from pt.supervisor import Supervisor, Estado
 from pt.control import ReferenciaVisual
 from pt.enlace import EnlaceNulo, EnlaceTrama, EnlaceSimulado
@@ -45,8 +45,8 @@ def argumentos():
     ap.add_argument("--fps", type=float, help="sobrescribe parametros.Captura.fps")
     ap.add_argument("--exposicion", type=int, help="µs; fija la exposición")
     ap.add_argument("--ganancia", type=float, help="ganancia analógica (luz_2.py usa 2,0)")
-    ap.add_argument("--detector", choices=["rojo", "luz", "brillo"], default="rojo",
-                    help="rojo = láser rojo (plano V); luz = flash del celular (de luz_2.py); brillo = el original")
+    ap.add_argument("--detector", choices=["rojo", "luz", "brillo", "avion"], default="rojo",
+                    help="rojo = láser rojo (plano V); luz = flash del celular; brillo = original; avion = detector de avion")
     ap.add_argument("--enlace", choices=["nulo", "simulado", "trama"], default="nulo",
                     help="nulo: sin actuadores; simulado: ESP32 y ejes simulados; trama: ESP32 real")
     ap.add_argument("--puerto", help="por defecto /dev/ttyAMA0 (UART del header, pines 8 y 10)")
@@ -255,6 +255,8 @@ def main():
         det = DetectorLaserRojo(P.deteccion_roja)
     elif a.detector == "luz":
         det = DetectorLuz(P.deteccion_luz)
+    elif a.detector == "avion":
+        det = DetectorAvionRojo(P)
     else:
         det = DetectorLaser(P.deteccion)
     ref = ReferenciaVisual(P, geo)

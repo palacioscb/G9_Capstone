@@ -59,6 +59,16 @@ class Deteccion:
     area_max: int = 400
     salto_max_px: float = 80.0    # salto máximo entre cuadros consecutivos válidos [px]
 
+@dataclass
+class DeteccionAvion:
+    v_umbral: int = 150          # Umbral fijo de seguridad
+    min_pix: int = 3             # Píxeles mínimos en el plano V
+    roi_r: int = 20
+    b_global: int = 4
+    bloque_ventana: int = 2
+    bloque_global: int = 8
+    ventana_seguimiento: int = 80
+    salto_max_px: float = 80.0
 
 @dataclass
 class DeteccionLuz:
@@ -176,3 +186,4 @@ class Parametros:
     lazo: LazoExterno = field(default_factory=LazoExterno)
     actuador: Actuador = field(default_factory=Actuador)
     enlace: Enlace = field(default_factory=Enlace)
+    deteccion_avion: DeteccionAvion = field(default_factory=DeteccionAvion)
