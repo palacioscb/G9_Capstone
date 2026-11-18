@@ -1,0 +1,87 @@
+==============================================================================
+RESUMEN DE MEDICIÓN - AVIÓN ROJO
+==============================================================================
+Cuadros registrados: 7205   fuente: camara   exposición: 8000 us   ganancia: 4.0   ganancias de color: None
+Periodo entre cuadros: mediana 12.49 ms (nominal 12.50); cuadros con salto > 1,5x nominal: 0
+
+--- FONDO (sin avión) -------------------------------------------------------
+Plano V: máximo 123, p99.9 113, medio 104.1, desv. 2.87  (402 cuadros)
+Plano Y: máximo 122, p99.9 109, medio 83.1
+Umbral de referencia usado (V): 131  (máximo del fondo + margen)
+
+--- POR ORIENTACIÓN (p5 / mediana / p95) -------------------------------------
+[sin_avion] cuadros: 473   con avión detectado por la referencia: 9 (2 %)
+[frente] cuadros: 1168   con avión detectado por la referencia: 1168 (100 %)
+   área (px Y)      34504 / 113078 / 235123
+   eje mayor/menor  432.5 / 567.4 / 670.2  |  162.6 / 338.0 / 498.7  (px Y)
+   aspecto caja     0.75 / 1.22 / 1.45   relleno 0.25 / 0.44 / 0.77   elongación 1.33 / 1.55 / 2.85
+   V pico           179 / 183 / 186   V medio 165.0 / 170.6 / 174.0   V entorno 108.4 / 109.9 / 114.8
+   Y medio objeto   45.8 / 49.6 / 52.7   Y entorno 70.4 / 76.2 / 82.1   contraste Y -30.1 / -26.8 / -23.2
+   Y máx 7x7        47 / 51 / 56   fracción saturada 0.00 / 0.00 / 0.00
+[lado] cuadros: 1158   con avión detectado por la referencia: 1080 (93 %)
+   área (px Y)      22079 / 47520 / 109500
+   eje mayor/menor  332.3 / 663.1 / 768.1  |  93.1 / 129.4 / 268.9  (px Y)
+   aspecto caja     1.50 / 2.70 / 4.15   relleno 0.34 / 0.39 / 0.64   elongación 1.82 / 5.12 / 5.73
+   V pico           177 / 182 / 187   V medio 159.0 / 166.0 / 174.1   V entorno 105.2 / 107.9 / 111.4
+   Y medio objeto   47.3 / 50.5 / 54.4   Y entorno 74.4 / 80.1 / 91.9   contraste Y -39.0 / -29.2 / -24.7
+   Y máx 7x7        52 / 57 / 61   fracción saturada 0.00 / 0.00 / 0.00
+[arriba] cuadros: 1005   con avión detectado por la referencia: 935 (93 %)
+   área (px Y)      1399 / 20448 / 52923
+   eje mayor/menor  51.1 / 269.2 / 466.2  |  36.2 / 107.2 / 160.9  (px Y)
+   aspecto caja     1.13 / 1.50 / 2.89   relleno 0.40 / 0.56 / 0.72   elongación 1.46 / 2.44 / 3.47
+   V pico           167 / 177 / 184   V medio 153.7 / 157.8 / 167.9   V entorno 105.8 / 107.3 / 110.9
+   Y medio objeto   44.5 / 49.9 / 55.9   Y entorno 78.1 / 88.9 / 98.6   contraste Y -46.7 / -38.7 / -30.0
+   Y máx 7x7        43 / 50 / 56   fracción saturada 0.00 / 0.00 / 0.00
+[atras] cuadros: 1043   con avión detectado por la referencia: 920 (88 %)
+   área (px Y)      626 / 20254 / 72370
+   eje mayor/menor  45.7 / 286.0 / 480.7  |  19.9 / 108.5 / 242.1  (px Y)
+   aspecto caja     0.72 / 1.97 / 3.54   relleno 0.40 / 0.49 / 0.63   elongación 1.92 / 2.73 / 4.80
+   V pico           172 / 176 / 182   V medio 153.4 / 164.9 / 170.0   V entorno 104.1 / 106.4 / 110.3
+   Y medio objeto   44.2 / 51.7 / 57.8   Y entorno 79.2 / 93.0 / 100.4   contraste Y -47.2 / -40.9 / -28.6
+   Y máx 7x7        45 / 54 / 60   fracción saturada 0.00 / 0.00 / 0.00
+[libre] cuadros: 2358   con avión detectado por la referencia: 2281 (97 %)
+   área (px Y)      8332 / 43108 / 94624
+   eje mayor/menor  228.3 / 420.6 / 701.6  |  61.1 / 168.7 / 288.2  (px Y)
+   aspecto caja     0.95 / 2.05 / 4.70   relleno 0.33 / 0.51 / 0.69   elongación 1.57 / 2.30 / 5.82
+   V pico           177 / 183 / 188   V medio 163.4 / 170.3 / 177.5   V entorno 105.1 / 106.8 / 111.3
+   Y medio objeto   48.3 / 53.1 / 57.0   Y entorno 78.7 / 87.3 / 98.8   contraste Y -44.3 / -34.8 / -26.2
+   Y máx 7x7        46 / 55 / 62   fracción saturada 0.00 / 0.00 / 0.00
+
+--- MOVIMIENTO (todas las orientaciones con avión) ---------------------------
+Desplazamiento entre cuadros consecutivos [px]: p50 2.0  p95 6.2  p99 9.7  máx 17.3
+Velocidad [px/s]: p50 160  p95 499  p99 777
+Salto tras pérdida de cuadros [px]: p50 2.6  p95 39.7  máx 43.8
+Cambio de área entre cuadros (área / área previa): p1 0.89  p99 1.14
+Pérdidas de la referencia en medio del movimiento: 5 episodios, racha máxima 123 cuadros
+
+--- DETECTOR EMULADO (DetectorLaserRojo con los parámetros --det-*) ---------
+Parámetros: bloque=8 v_umbral=145 frac_corte=0.5 y_min=0 area=[150,5000] salto_max=80 ventana=160 (paciencia 5 cuadros)
+Con avión: detectado 6145 / 6384 (96.3 %)  [de ellos desplazados del centro de la referencia: 0]
+Sin avión: falsos positivos 9 / 473 (1.9 %)
+Motivos de rechazo con avión presente: 'salto N px' 209, 'área N fuera de rango' 25, 'sin rojo sobre umbral' 4, 'bloque rojo sin pico' 1
+Error de centroide detector vs referencia [px]: p50 85.0  p95 211.0  máx 326.8
+Tiempo del detector [ms]: p50 0.207  p99 0.251  (periodo de cuadro 12.5 ms)
+
+==============================================================================
+PARÁMETROS SUGERIDOS (punto de partida; validar con --det-* y volver a medir)
+==============================================================================
+v_umbral: 148   (fondo máx 123, V pico del avión p5 173, margen 50)
+bloque: 16   (la ventana del centroide mide ~3·bloque px de V; debe cubrir el eje mayor p95 = 366 px de V)
+   AVISO: area_max 301084 supera el área que ve el centroide con bloque=16 (9216); se limita.
+area_min: 240   area_max: 9216   (px del plano Y; área p1 482, p99 231604)
+salto_max_px: 40   (mayor entre 1,5 x p99 del desplazamiento entre cuadros = 9.7 px y p95 del salto tras pérdida = 39.7 px; mínimo 20)
+ventana_seguimiento: 816   (lado en px Y: 2·(1,5·p99 salto + medio eje mayor p99) + 16)
+y_min: 0   (el avión es mate: Y máx 7x7 p5 = 45; si algún día confirmas por brillo, no pases de 31)
+frac_corte: 0.5   (revisar con cuadros.npz si el centroide se sesga con el avión de canto)
+
+# --- pegar en parametros.py (configuración del avión) ---
+bloque = 16
+v_umbral = 148
+frac_corte = 0.5
+y_min = 0
+area_min = 240
+area_max = 9216
+salto_max_px = 40
+ventana_seguimiento = 816
+
+NOTA: la 'referencia' supone que lo único rojo sobre el umbral es el avión. Si en el cuadro hay otras cosas rojas más intensas que el fondo medido, aparecerán como avión; sácalas de la escena o repite la fase de fondo con ellas presentes.
