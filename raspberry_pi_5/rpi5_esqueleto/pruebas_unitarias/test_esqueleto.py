@@ -796,6 +796,95 @@ def test_fuente_sintetica_con_silueta():
         assert not rojo.procesar(c.img, usar_ventana=False, v=c.v).valido          # no hay nada rojo que detectar
 
 
+def test_cambiar_de_detector_trae_su_perfil():
+    """Elegir otro detector en el tablero aplica el perfil de ese objetivo; lo escrito en el pedido manda."""
+    from pt.ajustes import perfil_de
+    aj = _ajustes_de_prueba()
+    assert perfil_de(aj.perfiles, "luz") == "luz" and perfil_de(aj.perfiles, "avion") is None
+    assert perfil_de({"otro": {"detector": "rojo"}, "laser": {"detector": "rojo"}}, "rojo") == "laser"
+    ok, mal = aj.pedir({"detector": "luz"}, "tablero")
+    assert ok == {"detector": "luz", "exposicion_us": 3000} and mal == {}
+    pend = aj.pendientes()
+    assert [p[0] for p in pend] == ["detector", "exposicion_us", "_perfil"] and pend[-1][1] == "luz"
+    for clave, valor, origen in pend:
+        aj.confirmar(clave, valor, origen)
+    assert aj.perfil_activo == "luz" and not aj.perfil_modificado
+    assert aj.pedir({"detector": "luz"})[0] == {"detector": "luz"}           # mismo detector: no se repone el perfil
+    aj.pendientes()
+    aj.confirmar("detector", "rojo")
+    assert aj.pedir({"detector": "luz", "exposicion_us": 5000})[0] == {"detector": "luz", "exposicion_us": 5000}
+    aj.pendientes()
+    assert aj.pedir({"detector": "avion"})[0] == {"detector": "avion"}       # sin perfil para ese detector: sólo cambia
+    aj.pendientes()
+    aj.detector_trae_perfil = False                                          # main.py --sin-perfil
+    assert aj.pedir({"detector": "luz"})[0] == {"detector": "luz"}
+    assert aj.pedir_perfil("luz")[0] == {"detector": "luz", "exposicion_us": 3000}   # el botón de perfil sigue igual
+
+
+def test_perfil_del_avion_completo_y_dentro_de_rango():
+    """El perfil «avion» cabe en los rangos del tablero y, al elegir el detector, repone cámara, umbrales y λ."""
+    import argparse
+    import json
+    import main as programa
+    from pt.ajustes import Ajustes
+    from pt.control import ReferenciaVisual
+    from pt.parametros import PERFILES
+
+    class CamaraFalsa:
+        def __init__(self):
+            self.pedidos = []
+
+        def ajustar(self, **kw):
+            self.pedidos.append(kw)
+
+    Pp = Parametros()
+    a = argparse.Namespace(detector="rojo", exposicion=None, ganancia=None)
+    aj = Ajustes(programa.lista_de_ajustes(a, Pp, con_camara=True), PERFILES)      # sin archivo: la tabla de parametros.py
+    for clave, valor in PERFILES["avion"].items():
+        assert clave in aj.specs and aj.validar(clave, valor)[0], clave
+    with open(programa.RUTA_PERFILES, encoding="utf-8") as f:
+        del_archivo = json.load(f).get("avion", {})
+    for clave, valor in del_archivo.items():                                       # lo que el equipo regrabe debe seguir en rango
+        assert clave not in aj.specs or aj.validar(clave, valor)[0], clave
+    #* Los valores por defecto del detector son los del perfil: las herramientas (sin tablero) miden lo mismo.
+    for clave, valor in PERFILES["avion"].items():
+        if clave.startswith("avion.") and clave != "avion.salto_activo":
+            assert getattr(Pp.forma_avion, clave.split(".", 1)[1]) == valor, clave
+
+    dets = programa.crear_detectores(Pp)
+    ref = ReferenciaVisual(Pp, Geometria.desde_parametros(Pp))
+    sup = Supervisor(Pp.supervisor)
+    cam = CamaraFalsa()
+    vivo = programa.AjustesEnVivo(aj, a, Pp, cam, dets, ref, sup)
+    aj.pedir({"lam": 0.9, "avion.alargamiento_max": 3.0, "avion.dist_max": 0.4, "ganancia": 1.5})   # lo que dejó otro objetivo
+    det = vivo.aplicar(dets["rojo"], 1.0)
+    assert Pp.forma_avion.alargamiento_max == 3.0 and ref.est.eu.rls.lam == 0.9
+    aj.pedir({"detector": "avion"}, "tablero")
+    det = vivo.aplicar(det, 2.0)
+    assert det is dets["avion"] and aj.perfil_activo == "avion" and not aj.perfil_modificado
+    assert {"exposicion_us": 8000} in cam.pedidos and cam.pedidos[-3:] != [] and {"ganancia": 4.0} in cam.pedidos
+    assert Pp.forma_avion.alargamiento_max == 8.0 and Pp.forma_avion.dist_max == 0.18 and Pp.forma_avion.contraste_min == 12
+    assert ref.est.eu.rls.lam == 0.80 and ref.est.ew.rls.lam == 0.80 and aj.valores["ganancia"] == 4.0
+
+
+def test_perfil_al_partir_respeta_la_linea_de_comandos():
+    """Al partir con la cámara, el perfil fija exposición y ganancia antes de abrirla; lo dado por comando manda."""
+    import argparse
+    import json
+    import main as programa
+    with open(programa.RUTA_PERFILES, encoding="utf-8") as f:
+        perfil = json.load(f)["avion"]
+    Pp = Parametros()
+    nombre, excluir = programa.perfil_de_inicio(argparse.Namespace(detector="avion", exposicion=None, ganancia=None), Pp)
+    assert nombre == "avion" and excluir == ()
+    assert Pp.captura.exposicion_us == perfil["exposicion_us"] and Pp.captura.ganancia == perfil["ganancia"]
+    Pp = Parametros()
+    Pp.captura.exposicion_us = 4000                                           # --exposicion 4000
+    nombre, excluir = programa.perfil_de_inicio(argparse.Namespace(detector="avion", exposicion=4000, ganancia=None), Pp)
+    assert excluir == ("exposicion_us",) and Pp.captura.exposicion_us == 4000 and Pp.captura.ganancia == perfil["ganancia"]
+    assert programa.perfil_de_inicio(argparse.Namespace(detector="brillo", exposicion=None, ganancia=None), Parametros())[0] is None
+
+
 if __name__ == "__main__":
     fallas = 0
     for nombre, f in list(globals().items()):

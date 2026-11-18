@@ -17,7 +17,20 @@
   },
   "avion": {
     "detector": "avion",
-    "exposicion_us": 6000,
-    "ganancia": 2.0
+    "exposicion_us": 8000,
+    "ganancia": 4.0,
+    "color_rojo": 2.0,
+    "color_azul": 1.5,
+    "avion.polaridad": "oscuro",
+    "avion.contraste_min": 12,
+    "avion.dist_max": 0.18,
+    "avion.tam_max_px": 91,
+    "avion.area_min": 150,
+    "avion.alargamiento_max": 8.0,
+    "avion.frac_borde": 0.5,
+    "avion.abrir_frac": 0.1,
+    "avion.salto_activo": true,
+    "lam": 0.8,
+    "sigma_min_deg": 0.1
   }
 }

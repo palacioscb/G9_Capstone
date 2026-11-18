@@ -87,6 +87,9 @@ def argumentos():
     ap.add_argument("--ventana", action="store_true", help="muestra la imagen (requiere OpenCV y pantalla)")
     ap.add_argument("--sin-recorte", action="store_true",
                     help="sin la herramienta de recorte del tablero (pt/recorte.py): ni controles ni código en el lazo, como antes del 18-11")
+    ap.add_argument("--sin-perfil", action="store_true",
+                    help="no aplicar el perfil del objetivo (perfiles.json) ni al partir con --fuente camara "
+                         "ni al cambiar de detector en el tablero; los botones de perfil siguen disponibles")
     ap.add_argument("--registro", default="registros", help="carpeta de salida del CSV")
     #* MON-1 / MON-2: tablero web en la red local, en un hilo aparte (sin monitor HDMI).
     red = ap.add_argument_group("monitoreo por red (MON-1 / MON-2)")
@@ -175,7 +178,8 @@ def lista_de_ajustes(a, P, con_camara):
     L += [
         Ajuste("detector", "Detector", "Objetivo", "opcion", a.detector, opciones=DETECTORES,
                ayuda="rojo = láser; luz = flash; avion = avión por forma; ovni = objeto circular por forma; "
-                     "avion_rojo = avión por color (anterior); brillo = pico de brillo (original)."),
+                     "avion_rojo = avión por color (anterior); brillo = pico de brillo (original). "
+                     "Al cambiarlo se aplica el perfil de ese objetivo (cámara, umbrales y predictor)."),
         Ajuste("rojo.v_umbral", "Umbral de rojo (plano V)", "Detector", "int", P.deteccion_roja.v_umbral, 129, 255, 1,
                detector="rojo", ayuda="128 = neutro, 255 = rojo puro."),
         Ajuste("rojo.y_min", "Brillo mínimo (plano Y)", "Detector", "int", P.deteccion_roja.y_min, 0, 255, 1,
@@ -248,6 +252,37 @@ def lista_de_ajustes(a, P, con_camara):
                        0, (An if e == "x" else Al) - 1, 1, "px", en_perfil=False)
                 for i in range(1, 5) for e in "xy"]]
     return L
+
+
+def perfil_de_inicio(a, P):
+    """Perfil del objetivo con que parte main.py (--detector), para no ajustar a mano en cada corrida.
+
+    Deja en P.captura la cámara del perfil ANTES de abrirla (parte ya con esa exposición). Devuelve
+    (nombre del perfil o None, claves que no se tocan). El resto del perfil (umbrales, predictor)
+    lo aplica main() cuando ya existen los detectores, por el mismo camino que usa el tablero."""
+    from pt.ajustes import Ajustes, perfil_de
+    aj = Ajustes(lista_de_ajustes(a, P, con_camara=True), PERFILES, RUTA_PERFILES)   # sólo para validar rangos
+    nombre = perfil_de(aj.perfiles, a.detector)
+    if nombre is None:
+        return None, ()
+    #* Lo escrito en la línea de comandos manda sobre el perfil.
+    excluir = tuple(c for c, dado in (("exposicion_us", a.exposicion), ("ganancia", a.ganancia)) if dado)
+    perfil, c = aj.perfiles[nombre], P.captura
+    for clave in ("exposicion_us", "ganancia", "color_rojo", "color_azul"):
+        if clave not in perfil or clave in excluir or clave not in aj.specs:
+            continue
+        ok, v = aj.validar(clave, perfil[clave])
+        if not ok:
+            print(f"Perfil «{nombre}»: {clave} = {perfil[clave]!r} no aplicado ({v}).")
+        elif clave == "exposicion_us":
+            c.exposicion_us = v
+        elif clave == "ganancia":
+            c.ganancia = v
+        elif clave == "color_rojo":
+            c.ganancias_color = (v, c.ganancias_color[1])
+        else:
+            c.ganancias_color = (c.ganancias_color[0], v)
+    return nombre, excluir
 
 
 class AjustesEnVivo:
@@ -441,6 +476,12 @@ def main():
         a.tiempo_real = True             #* con el tablero abierto, la simulación va al ritmo real
         print("Monitor: fuente sintética en tiempo real (--tiempo-real).")
 
+    #* Perfil del objetivo al partir. Sólo con la cámara real: con la fuente sintética no se aplica,
+    #* para que las simulaciones no dependan de lo que alguien haya guardado en perfiles.json.
+    perfil_inicio, excluir_inicio = (None, ())
+    if a.fuente == "camara" and not a.sin_perfil:
+        perfil_inicio, excluir_inicio = perfil_de_inicio(a, P)
+
     # --- Geometría y enlace (antes que la fuente: el simulado le da la pose a la escena) -----
     if a.fuente == "camara":
         from pt.camara import FuenteCamara
@@ -498,10 +539,24 @@ def main():
     if a.monitor and not a.monitor_solo_lectura:
         from pt.ajustes import Ajustes
         aj = Ajustes(lista_de_ajustes(a, P, con_camara=(a.fuente == "camara")), PERFILES, RUTA_PERFILES)
+        aj.detector_trae_perfil = not a.sin_perfil
         vivo = AjustesEnVivo(aj, a, P, fuente, detectores, ref, sup)
         if not a.sin_recorte:
             from pt.recorte import RecorteROI
             recorte = vivo.recorte = RecorteROI(*P.captura.salida_px)
+    if perfil_inicio:
+        #* Resto del perfil (umbrales del detector, predictor): se valida y se aplica igual que un
+        #* clic en el tablero, pero aquí mismo, antes del primer cuadro. Funciona con o sin --monitor.
+        from pt.ajustes import Ajustes
+        aj0 = vivo.aj if vivo else Ajustes(lista_de_ajustes(a, P, con_camara=True), PERFILES, RUTA_PERFILES)
+        aplicador = vivo or AjustesEnVivo(aj0, a, P, fuente, detectores, ref, sup)
+        puestos, malos = aj0.pedir_perfil(perfil_inicio, "inicio", excluir=excluir_inicio)
+        det = aplicador.aplicar(det, 0.0)
+        print(f"Perfil «{perfil_inicio}» aplicado al partir (detector {a.detector}): "
+              + ", ".join(f"{c} = {v}" for c, v in puestos.items() if c != "detector")
+              + (f" | no aplicado: {malos}" if malos else "")
+              + (f" | de la línea de comandos: {', '.join(excluir_inicio)}" if excluir_inicio else "")
+              + ". Para partir sin perfil: --sin-perfil")
     mon = MonitorRed(a, P, geo, enl, reg, ajustes=vivo.aj if vivo else None) if a.monitor else None
     if mon:
         print("Monitor (abrir en el navegador de un equipo en la misma red):")

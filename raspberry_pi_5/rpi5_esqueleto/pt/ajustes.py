@@ -12,6 +12,8 @@ Así el lazo nunca espera al navegador y nunca recibe un valor sin validar.
 
 PERFILES: un perfil es un juego de valores por objetivo (detector + cámara + umbrales + λ).
 Se aplica con un clic y se puede regrabar con lo que esté funcionando; queda en perfiles.json.
+Elegir otro DETECTOR en el tablero aplica también el perfil de ese objetivo (perfil_de): así no
+hay que volver a poner a mano la exposición, la ganancia y los umbrales en cada cambio.
 """
 #! Este módulo es la ÚNICA puerta de escritura del tablero. Lo que no esté declarado como
 #! Ajuste no se puede cambiar por la red: no hay clave para habilitar motores, mandar
@@ -42,8 +44,23 @@ class Ajuste:
     ayuda: str = ""
 
 
+def perfil_de(perfiles, detector):
+    """Nombre del perfil que corresponde a un detector, o None si no hay.
+    Primero el que se llama igual que el detector; si no, el primero (en orden alfabético) cuyo
+    campo "detector" es ése: p. ej. el perfil «laser» para el detector rojo."""
+    p = perfiles.get(detector)
+    if isinstance(p, dict) and p.get("detector", detector) == detector:
+        return detector
+    for nombre in sorted(perfiles):
+        if perfiles[nombre].get("detector") == detector:
+            return nombre
+    return None
+
+
 class Ajustes:
     def __init__(self, lista, perfiles=None, ruta_perfiles=None):
+        #* True: cambiar de detector trae el perfil de ese objetivo. main.py --sin-perfil lo apaga.
+        self.detector_trae_perfil = True
         self.specs = {a.clave: a for a in lista}
         self.valores = {a.clave: a.valor for a in lista}        # lo APLICADO (lo escribe el lazo)
         self.perfiles = {n: dict(v) for n, v in (perfiles or {}).items()}
@@ -79,8 +96,9 @@ class Ajustes:
             return False, f"fuera de rango [{a.min}, {a.max}]"
         return True, valor
 
-    def pedir(self, cambios, origen=""):
-        """Valida y encola. Devuelve (aceptados, rechazados); un rechazo no bloquea al resto."""
+    def pedir(self, cambios, origen="", con_perfil=True):
+        """Valida y encola. Devuelve (aceptados, rechazados); un rechazo no bloquea al resto.
+        Si el pedido CAMBIA el detector, se suma el perfil de ese objetivo (detector_trae_perfil)."""
         aceptados, rechazados = {}, {}
         if not isinstance(cambios, dict):
             return aceptados, {"": "se esperaba un objeto {clave: valor}"}
@@ -90,18 +108,36 @@ class Ajustes:
                 aceptados[clave] = r
             else:
                 rechazados[str(clave)] = r
+        #* Otro detector = otro objetivo: se trae su perfil completo (cámara, umbrales, predictor).
+        #* Lo que venga escrito en el mismo pedido manda sobre el perfil. Los valores del perfil
+        #* pasan por la misma validación de tipo y rango que cualquier otro pedido.
+        perfil = None
+        if (con_perfil and self.detector_trae_perfil and "detector" in aceptados
+                and aceptados["detector"] != self.valores.get("detector")):
+            perfil = perfil_de(self.perfiles, aceptados["detector"])
+            for clave, valor in (self.perfiles[perfil].items() if perfil else ()):
+                if clave in self.specs and clave not in cambios:
+                    ok, r = self.validar(clave, valor)
+                    if ok:
+                        aceptados[clave] = r
+                    else:
+                        rechazados[clave] = r
         #* El detector va primero: sus umbrales se aplican después, ya con el detector nuevo.
         for clave in sorted(aceptados, key=lambda c: c != "detector"):
             self._cola.append((clave, aceptados[clave], origen))
+        if perfil:
+            self._cola.append(("_perfil", perfil, origen))
         return aceptados, rechazados
 
-    def pedir_perfil(self, nombre, origen=""):
+    def pedir_perfil(self, nombre, origen="", excluir=()):
+        """Encola un perfil completo. `excluir`: claves que se dejan como están (al partir, las que
+        el usuario fijó por la línea de comandos)."""
         perfil = self.perfiles.get(nombre)
         if perfil is None:
             return {}, {"perfil": f"no existe; perfiles: {sorted(self.perfiles)}"}
         #* Un perfil puede traer claves que esta corrida no tiene (cámara, con fuente sintética).
-        conocidos = {c: v for c, v in perfil.items() if c in self.specs}
-        aceptados, rechazados = self.pedir(conocidos, origen)
+        conocidos = {c: v for c, v in perfil.items() if c in self.specs and c not in excluir}
+        aceptados, rechazados = self.pedir(conocidos, origen, con_perfil=False)
         if aceptados:
             self._cola.append(("_perfil", nombre, origen))
         return aceptados, rechazados

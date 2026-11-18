@@ -148,6 +148,9 @@ python3 main.py --fuente camara --enlace trama --habilitar --duracion 0 --monito
 - **Perfiles por objetivo** (`laser`, `luz`, `avion`): un clic aplica detector, cámara, umbrales y λ juntos.
   - Los valores iniciales están en `PERFILES` de `pt/parametros.py`. Son valores de partida, no medidos en la plataforma.
   - **Guardar perfil** escribe los valores vigentes en `perfiles.json` (junto a `main.py`), que tiene prioridad en las corridas siguientes. Conviene subirlo al repositorio una vez ajustado.
+  - **El perfil se aplica solo** en dos casos, para no repetir los ajustes a mano: al elegir otro detector en el tablero, y al partir `main.py` con `--fuente camara --detector <objetivo>`. Se usa el perfil que se llama igual que el detector; si no existe, el primero cuyo campo `detector` es ése (`laser` para `rojo`). Lo escrito en la línea de comandos (`--exposicion`, `--ganancia`) manda sobre el perfil.
+  - Con `--sin-perfil` no se aplica en ninguno de los dos casos (los botones de perfil siguen disponibles). Con la fuente sintética no se aplica al partir, para que las simulaciones no dependan de `perfiles.json`.
+  - El perfil `avion` es completo (cámara 8000 µs y ganancia 4,0, umbrales de forma, λ y piso del gating): el origen de cada valor está comentado en `pt/parametros.py`.
 - **Cómo viaja un cambio:** el navegador hace `POST /ajustes`; el servidor valida clave, tipo y rango (`pt/ajustes.py`) y lo encola; el lazo lo aplica al comienzo del cuadro siguiente y lo confirma. El tablero muestra siempre el valor vigente.
 - **Registro:** el CSV tiene las columnas `detector`, `exp_us`, `ganancia`, `lam` y `ff` (feedforward activo), así que una corrida con varios objetivos se puede separar después.
 - **Análisis:** `herramientas/analizar_registro.py` parte cada CSV en tramos con el mismo detector y feedforward, analiza cada uno y entrega una tabla comparativa.

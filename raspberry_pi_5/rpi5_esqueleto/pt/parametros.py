@@ -218,15 +218,28 @@ class Enlace:
 #* Un perfil = detector + cámara + umbrales para un objetivo. Se aplica con un clic desde el
 #* tablero, sin volver a ejecutar main.py. Las claves son las de los ajustes (main.py,
 #* lista_de_ajustes); una clave que falte deja ese parámetro como esté.
+#* Además se aplica SOLO (pt/ajustes.py, perfil_de): al elegir ese detector en el tablero y al
+#* partir main.py con --fuente camara --detector <ése>. Se apaga con --sin-perfil.
 #? Valores de PARTIDA, no medidos en la plataforma: salen de los scripts de mi_proyecto_camara
 #? (laser_op.py, luz_op.py: exposición 2000 µs y ganancia 2,0) y de los valores por defecto de
-#? este archivo. El del avión es el de las corridas de lazo cerrado del equipo
-#? (--detector avion --exposicion 6000 --ganancia 2.0). Ajustarlos en el laboratorio desde el
-#? tablero y usar "Guardar perfil": quedan en perfiles.json, que tiene prioridad sobre esta tabla.
+#? este archivo. Ajustarlos en el laboratorio desde el tablero y usar "Guardar perfil": quedan
+#? en perfiles.json, que tiene prioridad sobre esta tabla.
 PERFILES = {
     "laser": {"detector": "rojo", "exposicion_us": 2000, "ganancia": 1.0},
     "luz": {"detector": "luz", "exposicion_us": 2000, "ganancia": 2.0},
-    "avion": {"detector": "avion", "exposicion_us": 6000, "ganancia": 2.0},
+    #* Avión por FORMA (18-11-2026). Perfil COMPLETO: no depende del objetivo que se usó antes.
+    #*   Cámara: 8000 µs y ganancia 4,0, la única condición MEDIDA con el avión real (grabación
+    #*     medicion_avion: avión en 50 de gris, entorno en 76–93, sin saturación). El valor
+    #*     anterior (6000 µs, ganancia 2,0) venía del detector por color y recoge 2,7 veces menos luz.
+    #*   Umbrales: los de Parametros.forma_avion (más abajo está de dónde sale cada uno).
+    #*   Predictor: λ y piso del gating por defecto, para deshacer lo que deje otro perfil.
+    #? Las ganancias de color son las de Captura. La grabación se hizo sin fijarlas, así que el
+    #? nivel de gris puede diferir algo: revisar el contraste una vez en el tablero y regrabar el perfil.
+    "avion": {"detector": "avion", "exposicion_us": 8000, "ganancia": 4.0, "color_rojo": 2.0, "color_azul": 1.5,
+              "avion.polaridad": "oscuro", "avion.contraste_min": 12, "avion.dist_max": 0.18,
+              "avion.tam_max_px": 91, "avion.area_min": 150, "avion.alargamiento_max": 8.0,
+              "avion.frac_borde": 0.5, "avion.abrir_frac": 0.10, "avion.salto_activo": True,
+              "lam": 0.80, "sigma_min_deg": 0.1},
     #? Objeto no identificado: se busca una figura circular (un disco inclinado se ve como
     #? elipse y también se acepta). Exposición de partida, igual a la del avión.
     "ovni": {"detector": "ovni", "exposicion_us": 6000, "ganancia": 2.0},
@@ -256,6 +269,11 @@ class Parametros:
     #* contraste según la zona del cuadro. El fondo vacío llega a 17 en algún píxel, pero no forma
     #* manchas de 150 px con umbral 12 o más (con 10 aparecen 2 en 24 cuadros).
     #? Si se mejora el contraste (más luz sobre el fondo, fondo más claro), volver a subirlo.
-    forma_avion: DeteccionForma = field(default_factory=lambda: DeteccionForma(contraste_min=12))
+    #* alargamiento_max del avión = 8. De lado, el avión real mide 4,7 a 5,7 de largo/ancho (fotos
+    #* del 18-11, sin la sombra) y 5,1 de mediana / 5,7 en el percentil 95 en la grabación con la
+    #* cámara: con el límite general de 6 quedaba al borde. Con 8, sobre los 24 cuadros de fondo de
+    #* la cámara y las 3 fotos de fondo no aparece ninguna detección (igual que con 6).
+    #* dist_max = 0,18 (el general): la vista de lado da 0,11–0,18 en las fotos; con 0,15 se pierde una de cinco.
+    forma_avion: DeteccionForma = field(default_factory=lambda: DeteccionForma(contraste_min=12, alargamiento_max=8.0))
     forma_ovni: DeteccionForma = field(default_factory=lambda: DeteccionForma(
         formas=("circulo",), polaridad="ambos", dist_max=0.06, alargamiento_max=3.0, abrir_frac=0.0))
