@@ -62,16 +62,18 @@ class FuenteSintetica:
         #* se interpreta como dirección en el MUNDO (la que tendría con la cámara en 0°, 0°) y el
         #* punto se dibuja donde lo vería la cámara con la pose de la plataforma en ese instante.
         self.geo, self.pose_en = geometria, pose_en
-        #* objeto = "avion" o "circulo": en vez del punto láser se dibuja una SILUETA oscura
-        #* (sin color: el plano V queda neutro), para probar los detectores por forma. Su centro
-        #* de área queda en (u, w); gira lento y se ve inclinada, como un objeto real.
+        #* objeto = "circulo": en vez del punto láser se dibuja una SILUETA oscura (sin color: el
+        #* plano V queda neutro), para probar el detector por forma. Su centro de área queda en
+        #* (u, w); gira lento y se ve inclinada, como un objeto real.
+        #* No hay avión sintético: el detector del avión se prueba con cuadros reales
+        #* (herramientas/grabar_cuadros.py y reproducir_forma.py).
         self.objeto, self.tam_objeto = objeto, tam_objeto_px
         self._k_render = 0
         if objeto != "punto":
             import cv2
             from . import formas
             self._cv2, self._formas = cv2, formas
-            self._pol = formas.poligono("avion_planta" if objeto == "avion" else "circulo")
+            self._pol = formas.poligono(objeto)
         self.vv, self.uu = np.mgrid[0:alto, 0:ancho].astype(np.float32)
         self.vv2, self.uu2 = np.mgrid[0:alto // 2, 0:ancho // 2].astype(np.float32)
 

@@ -2,11 +2,10 @@
 """
 aprender_forma.py — enseña al detector por forma una VISTA del objetivo real.
 
-El detector (pt/deteccion.py, DetectorForma) compara la silueta que ve con plantillas. Las
-incorporadas ("avion_planta") son dibujos genéricos: con otro modelo de avión
-no sirven. Este programa mide la silueta del objetivo verdadero y la guarda en formas.json,
-junto a main.py. Desde ese momento, las plantillas aprendidas de una familia ("avion_*")
-reemplazan a las genéricas.
+El detector (pt/deteccion.py, DetectorForma) compara la silueta que ve con plantillas. Para
+el avión no hay plantillas incorporadas: este programa mide la silueta del avión verdadero y
+la guarda en formas.json, junto a main.py. Sin al menos una vista aprendida ("avion_*"), el
+detector "avion" no detecta nada y lo avisa en el tablero.
 
 Cómo tomar la muestra
   - el objetivo solo, completo y cerca del centro del cuadro, sobre un fondo liso;
@@ -50,9 +49,9 @@ RUTA_FORMAS = os.path.join(RAIZ, "formas.json")
 def cuadros_de_imagenes(patrones):
     for patron in patrones:
         for ruta in sorted(glob.glob(patron)) or [patron]:
-            if ruta.endswith(".npz"):                      # p. ej. cuadros.npz de medir_avion.py
+            if ruta.endswith(".npz"):                      # archivo con cuadros Y (clave "y")
                 with np.load(ruta) as z:
-                    for clave in (["y"] if "y" in z.files else z.files):   # medir_avion.py guarda y (luminancia) y v
+                    for clave in (["y"] if "y" in z.files else z.files):   # y = luminancia
                         arr = z[clave]
                         if arr.dtype == np.uint8 and arr.ndim in (2, 3) and arr.shape[-1] >= 320:
                             for y in (arr if arr.ndim == 3 else [arr]):
@@ -111,7 +110,7 @@ def main():
         datos = json.load(open(RUTA_FORMAS, encoding="utf-8"))
         datos.pop(a.borrar)
         json.dump(datos, open(RUTA_FORMAS, "w", encoding="utf-8"), indent=1)
-        print(f"Borrada '{a.borrar}'. Quedan: {sorted(datos) or 'ninguna (vuelven las genéricas)'}")
+        print(f"Borrada '{a.borrar}'. Quedan: {sorted(datos) or 'ninguna'}")
         return
     if not a.nombre or not (a.camara or a.imagen):
         ap.error("indicar --nombre y de dónde sale la muestra: --camara o --imagen")

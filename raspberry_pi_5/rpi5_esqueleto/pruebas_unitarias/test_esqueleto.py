@@ -340,16 +340,6 @@ def test_detector_luz_flash_grande_y_pixel_caliente():
     vacia = np.full((H, W), 30, np.uint8)
     assert not det.procesar(vacia).valido
 
-def test_detector_avion():
-    from pt.parametros import Parametros
-    from pt.deteccion import DetectorAvionRojo
-    P = Parametros()
-    det = DetectorAvionRojo(P)
-    v_dummy = np.zeros((240, 320), dtype=np.uint8)
-    v_dummy[120, 160] = 200  # Valor sobre el umbral simulado
-    res = det.procesar(v_dummy, usar_ventana=False, v=v_dummy)
-    assert res is not None
-
 def test_monitor_red_sirve_y_exporta():
     """MON-1 / MON-2: el servidor arranca, entrega config, flujo (sin NaN) y CSV."""
     import json
@@ -494,7 +484,7 @@ def test_ajustes_en_vivo_cambio_de_objetivo():
     import main as programa
     from pt.ajustes import Ajustes
     from pt.control import ReferenciaVisual
-    from pt.deteccion import DetectorLaserRojo, DetectorLuz, DetectorAvionRojo
+    from pt.deteccion import DetectorLaserRojo, DetectorLuz
 
     class CamaraFalsa:
         pedidos = []
@@ -525,10 +515,11 @@ def test_ajustes_en_vivo_cambio_de_objetivo():
     assert {"exposicion_us": 4000} in cam.pedidos and {"ganancias_color": (2.4, Pp.captura.ganancias_color[1])} in cam.pedidos
     assert aj.valores["lam"] == 0.9 and aj.valores["exposicion_us"] == 4000
 
-    aj.pedir({"detector": "avion", "avion.contraste_min": 40, "avion.polaridad": "claro", "avion_rojo.min_pix": 12})
+    assert "avion_rojo" not in programa.DETECTORES and aj.pedir({"detector": "avion_rojo"})[1]   # retirado el 18-11
+    aj.pedir({"detector": "avion", "avion.contraste_min": 40, "avion.polaridad": "claro"})
     det = vivo.aplicar(det, 2.0)
     assert det is dets["avion"] and a.detector == "avion" and det.p is Pp.forma_avion
-    assert Pp.forma_avion.contraste_min == 40 and Pp.forma_avion.polaridad == "claro" and Pp.deteccion_avion.min_pix == 12
+    assert Pp.forma_avion.contraste_min == 40 and Pp.forma_avion.polaridad == "claro"
     assert aj.pedir({"avion.polaridad": "rojo"})[1]                          # opción inexistente: rechazada
     assert sup.estado == Estado.BUSQUEDA and "cambio de objetivo" in sup.bitacora[-1][3]
     assert ref.est.eu.rls is not rls_antes and ref.est.eu.rls.lam == 0.9     # estimador nuevo, con el λ vigente
@@ -706,37 +697,63 @@ def test_ajustes_en_vivo_del_predictor():
     assert {"gating_d", "sigma_pan", "sigma_tilt"} <= set(COLUMNAS)
 
 
+#* Figura SÓLO para las pruebas (una flecha): no es una plantilla del producto. Las vistas del
+#* avión se aprenden del avión real (formas.json); aquí se prueba el mecanismo con otra figura.
+_FLECHA = np.array([(0.0, 1.0), (0.55, 0.25), (0.18, 0.25), (0.18, -1.0), (-0.18, -1.0), (-0.18, 0.25), (-0.55, 0.25)])
+
+
+def _banco_con_flecha(ruta=None):
+    from pt import formas as fm
+    banco = fm.BancoDeFormas(ruta)
+    banco.guardar("prueba_flecha", fm.descriptor(_FLECHA))
+    return banco
+
+
+def _cuadro_con(pol, tam, centro, giro=0.4, aplastar=(1.0, 0.8), fondo=150, nivel=45, extra=()):
+    """Cuadro Y de 640x480 con una figura oscura (y otras en `extra`) sobre un fondo claro con degradado."""
+    import cv2
+    from pt import formas as fm
+    img = np.tile(np.linspace(fondo - 12, fondo + 12, 640, dtype=np.float32), (480, 1))
+    px = fm.transformar(pol, tam, giro, (0.0, 0.0), aplastar)
+    px += np.asarray(centro, dtype=np.float64) - np.asarray(fm.momentos(px)[1])     # centro de área en `centro`
+    for p in (px,) + tuple(extra):
+        cv2.fillPoly(img, [np.round(p * 16).astype(np.int32)], float(nivel), cv2.LINE_AA, 4)
+    return np.clip(cv2.GaussianBlur(img, (0, 0), 0.8), 0, 255).astype(np.uint8)
+
+
 def test_formas_descriptor_de_fourier_invariante():
     """pt/formas.py: el descriptor no cambia con posición, tamaño, giro ni inclinación de una figura plana."""
     from pt import formas as fm
-    banco = fm.BancoDeFormas()
-    avion = fm.poligono("avion_planta")
+    banco = _banco_con_flecha()
+    avion = _FLECHA
     A, (cx, cy), C = fm.momentos(np.array([(0, 0), (2, 0), (2, 1), (0, 1)]))        # rectángulo de 2 x 1
     assert abs(A - 2) < 1e-12 and abs(cx - 1) < 1e-12 and abs(cy - 0.5) < 1e-12
     assert abs(C[0, 0] - 4 / 12) < 1e-12 and abs(C[1, 1] - 1 / 12) < 1e-12 and abs(C[0, 1]) < 1e-12
     for tam, giro, centro, aplastar in ((40, 0.3, (100, 50), (1, 1)), (300, 2.1, (-20, 900), (1, 1)),
                                         (120, 4.0, (0, 0), (0.4, 1.0)), (80, 1.0, (5, 5), (1.0, 0.5))):
         d = fm.descriptor(fm.transformar(avion, tam, giro, centro, aplastar))
-        assert fm.distancia(d, banco.plantillas["avion_planta"]) < 0.02
-    assert fm.distancia(fm.descriptor(avion[::-1]), banco.plantillas["avion_planta"]) < 1e-3   # sentido de recorrido
+        assert fm.distancia(d, banco.plantillas["prueba_flecha"]) < 0.02
+    assert fm.distancia(fm.descriptor(avion[::-1]), banco.plantillas["prueba_flecha"]) < 0.01   # sentido de recorrido
     elipse = fm.transformar(fm.poligono("circulo"), 100, 0.7, (0, 0), (1.0, 0.35))
     assert fm.distancia(fm.descriptor(elipse), banco.plantillas["circulo"]) < 0.01            # toda elipse es un círculo inclinado
     assert abs(fm.alargamiento(elipse) - 1 / 0.35) < 0.02
     cuadrado = np.array([(0, 0), (1, 0), (1, 1), (0, 1)], dtype=float)
     assert fm.distancia(fm.descriptor(cuadrado), banco.plantillas["circulo"]) > 0.10
-    assert fm.distancia(fm.descriptor(cuadrado), banco.plantillas["avion_planta"]) > 0.30
-    assert fm.distancia(banco.plantillas["avion_planta"], banco.plantillas["circulo"]) > 0.40
-    assert banco.mejor(fm.descriptor(fm.transformar(avion, 90, 1.2)), ("avion",))[0] == "avion_planta"
+    assert fm.distancia(fm.descriptor(cuadrado), banco.plantillas["prueba_flecha"]) > 0.30
+    assert fm.distancia(banco.plantillas["prueba_flecha"], banco.plantillas["circulo"]) > 0.40
+    assert banco.mejor(fm.descriptor(fm.transformar(avion, 90, 1.2)), ("prueba",))[0] == "prueba_flecha"
+    assert fm.INCORPORADAS == ("circulo",)                           # no hay aviones genéricos incorporados
+    assert banco.mejor(fm.descriptor(avion), ("avion",)) == (None, math.inf)   # sin vistas aprendidas del avión
 
 
-def test_banco_de_formas_aprende_y_prefiere_lo_aprendido():
-    """Las vistas aprendidas (formas.json) reemplazan a las genéricas de su familia."""
+def test_banco_de_formas_aprende_y_guarda():
+    """El banco parte sin vistas del avión; las aprendidas se guardan en formas.json y se vuelven a leer."""
     import tempfile
     from pt import formas as fm
     ruta = os.path.join(tempfile.mkdtemp(), "formas.json")
     banco = fm.BancoDeFormas(ruta)
-    assert set(banco.de_la_familia("avion")) == {"avion_planta"}     # la genérica de perfil ya no está por defecto
-    d = fm.descriptor(fm.poligono("avion_perfil")) * 1.1
+    assert banco.de_la_familia("avion") == {}                        # nada incorporado: hay que aprender
+    d = fm.descriptor(_FLECHA) * 1.1
     banco.guardar("avion_lado", d)
     otro = fm.BancoDeFormas(ruta)                                    # se vuelve a leer del archivo
     assert set(otro.de_la_familia("avion")) == {"avion_lado"} and "avion_lado" in otro.aprendidas
@@ -749,51 +766,67 @@ def test_banco_de_formas_aprende_y_prefiere_lo_aprendido():
         pass
 
 
-def test_detector_por_forma_avion_y_circulo():
-    """DetectorForma: encuentra la silueta entre otras figuras, sin usar color, y no inventa detecciones."""
-    from herramientas import evaluar_forma as ev
+def test_detector_por_forma_reconoce_lo_aprendido():
+    """DetectorForma: encuentra la figura aprendida entre otras, sin usar color, y no inventa detecciones."""
+    import dataclasses
+    from pt import formas as fm
     from pt.deteccion import DetectorForma
     Pp = Parametros()
-    avion, ovni = DetectorForma(Pp.forma_avion), DetectorForma(Pp.forma_ovni)
+    banco = _banco_con_flecha()
+    det = DetectorForma(dataclasses.replace(Pp.forma_avion, formas=("prueba",)), banco)
+    ovni = DetectorForma(Pp.forma_ovni, banco)
+    cuadrado = np.array([(-1, -1), (1, -1), (1, 1), (-1, 1)], dtype=float)
+    otra = fm.transformar(cuadrado, 80, 0.0, (105.0, 85.0), (1.0, 0.55))       # otra figura oscura: no es la flecha
     rng = np.random.default_rng(2)
-    aciertos = 0
-    for _ in range(12):                                              # avión entre rectángulos, manchas y una lámpara
-        img, c = ev.escena(rng, objetivo="avion_planta", distraer=True, lampara=True, tam=(70, 120))
-        avion.reiniciar()
-        r = avion.procesar(img, usar_ventana=False)                  # sólo recibe el plano Y
-        if r.valido:
-            assert np.hypot(r.u - c[0], r.w - c[1]) < 3.0 and r.forma.startswith("avion") and r.dist <= Pp.forma_avion.dist_max
-            aciertos += 1
-    assert aciertos >= 11
-    for _ in range(6):                                               # sin avión: no hay detección válida
-        img, _ = ev.escena(rng, objetivo=None, distraer=True, lampara=True)
-        avion.reiniciar()
-        r = avion.procesar(img, usar_ventana=False)
-        assert not r.valido and r.motivo
-    img, c = ev.escena(rng, objetivo="circulo", tam=(50, 80), inclinar=0.5)
+    for _ in range(8):                                               # la flecha, girada y de distinto tamaño, junto a un rectángulo
+        c = (float(rng.uniform(260, 520)), float(rng.uniform(200, 380)))
+        img = _cuadro_con(_FLECHA, float(rng.uniform(80, 130)), c, giro=float(rng.uniform(0, 6.28)), extra=(otra,))
+        det.reiniciar()
+        r = det.procesar(img, usar_ventana=False)                    # sólo recibe el plano Y
+        assert r.valido and r.forma == "prueba_flecha" and r.dist <= det.p.dist_max
+        assert np.hypot(r.u - c[0], r.w - c[1]) < 3.0
+    img = _cuadro_con(cuadrado, 80, (105.0, 85.0), giro=0.0, aplastar=(1.0, 0.55))
+    det.reiniciar()
+    r = det.procesar(img, usar_ventana=False)                        # sin la flecha: no hay detección válida
+    assert not r.valido and "ninguna figura parecida" in r.motivo
+    img = _cuadro_con(fm.poligono("circulo"), 70, (320.0, 240.0), aplastar=(1.0, 0.5))
     r = ovni.procesar(img, usar_ventana=False)
-    assert r.valido and r.forma == "circulo" and np.hypot(r.u - c[0], r.w - c[1]) < 2.0
-    avion.reiniciar()
-    r = avion.procesar(img, usar_ventana=False)                      # un disco no es un avión
+    assert r.valido and r.forma == "circulo" and np.hypot(r.u - 320, r.w - 240) < 2.0
+    det.reiniciar()
+    r = det.procesar(img, usar_ventana=False)                        # un disco no es la flecha
     assert not r.valido and "ninguna figura parecida" in r.motivo
     #* En SEGUIMIENTO trabaja en la ventana alrededor de la detección anterior.
-    img, c = ev.escena(rng, objetivo="avion_planta", tam=(80, 100))
-    avion.reiniciar()
-    r1 = avion.procesar(img, usar_ventana=True)
-    r2 = avion.procesar(img, usar_ventana=True)
+    img = _cuadro_con(_FLECHA, 100, (400.0, 260.0))
+    det.reiniciar()
+    r1 = det.procesar(img, usar_ventana=True)
+    r2 = det.procesar(img, usar_ventana=True)
     assert r1.valido and r2.valido and abs(r1.u - r2.u) < 0.5 and abs(r1.w - r2.w) < 0.5
+    #* Sin vistas aprendidas del avión no hay detección, y se dice por qué; aun así la figura se
+    #* mide, que es lo que usa aprender_forma.py para aprender la PRIMERA vista.
+    sin = DetectorForma(Pp.forma_avion)
+    r = sin.procesar(img, usar_ventana=False)
+    assert not r.valido and "sin plantillas de avion" in r.motivo
+    sin.detalle = []
+    for con, g, signo in sin._contraste(np.ascontiguousarray(img), 1):
+        sin._candidatos_de(con, 1, 0, 0, img.shape, g, signo)
+    assert sin.detalle and fm.distancia(sin.detalle[0]["descriptor"], banco.plantillas["prueba_flecha"]) < sin.p.dist_max
 
 
 def test_fuente_sintetica_con_silueta():
-    """--objeto avion: la fuente dibuja una silueta sin color y su centro de área es la verdad."""
+    """--objeto circulo: la fuente dibuja una silueta sin color y su centro de área es la verdad."""
     from pt.deteccion import DetectorForma, DetectorLaserRojo
     Pp = Parametros()
-    src = FuenteSintetica(640, 480, 80, 0.2, objeto="avion", fondo=150, oclusiones=(), falsos=())
-    det, rojo = DetectorForma(Pp.forma_avion), DetectorLaserRojo(Pp.deteccion_roja)
+    src = FuenteSintetica(640, 480, 80, 0.2, objeto="circulo", fondo=150, oclusiones=(), falsos=())
+    det, rojo = DetectorForma(Pp.forma_ovni), DetectorLaserRojo(Pp.deteccion_roja)
     for c in src:
         r = det.procesar(c.img, usar_ventana=True, v=c.v)
         assert r.valido and np.hypot(r.u - c.verdad[0], r.w - c.verdad[1]) < 1.5
         assert not rojo.procesar(c.img, usar_ventana=False, v=c.v).valido          # no hay nada rojo que detectar
+    try:
+        FuenteSintetica(640, 480, 80, 0.2, objeto="avion")                         # el avión ya no se simula
+        assert False
+    except KeyError:
+        pass
 
 
 def test_cambiar_de_detector_trae_su_perfil():

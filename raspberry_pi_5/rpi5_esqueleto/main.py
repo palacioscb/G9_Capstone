@@ -34,14 +34,14 @@ import numpy as np
 
 from pt.parametros import Parametros, PERFILES
 from pt.geometria import Geometria
-from pt.deteccion import DetectorLaser, DetectorLaserRojo, DetectorLuz, DetectorAvionRojo, DetectorForma
+from pt.deteccion import DetectorLaser, DetectorLaserRojo, DetectorLuz, DetectorForma
 from pt.supervisor import Supervisor, Estado
 from pt.control import ReferenciaVisual
 from pt.enlace import EnlaceNulo, EnlaceTrama, EnlaceSimulado
 from pt.registro import Registro
 
 #* Objetivos que se pueden elegir (opción --detector y tablero).
-DETECTORES = ("rojo", "luz", "avion", "ovni", "avion_rojo", "brillo")
+DETECTORES = ("rojo", "luz", "avion", "ovni", "brillo")
 #* Con la protección de salto desactivada (ajuste "<detector>.salto_activo" del tablero), salto_max_px vale esto:
 #* un valor finito y enorme, no inf, para que la configuración siga siendo JSON válido.
 SALTO_DESACTIVADO = 1e9
@@ -50,7 +50,7 @@ SALTO_DESACTIVADO = 1e9
 def crear_detectores(P, ruta_formas=None):
     """Todos los detectores creados de una vez: cambiar de objetivo es elegir otro."""
     d = {"rojo": DetectorLaserRojo(P.deteccion_roja), "luz": DetectorLuz(P.deteccion_luz),
-         "avion_rojo": DetectorAvionRojo(P), "brillo": DetectorLaser(P.deteccion)}
+         "brillo": DetectorLaser(P.deteccion)}
     try:
         from pt.formas import BancoDeFormas
         banco = BancoDeFormas(ruta_formas)
@@ -71,9 +71,10 @@ def argumentos():
     ap.add_argument("--ganancia", type=float, help="ganancia analógica (luz_2.py usa 2,0)")
     ap.add_argument("--detector", choices=list(DETECTORES), default="rojo",
                     help="rojo = láser rojo (plano V); luz = flash del celular; avion = avión por FORMA (plano Y); "
-                         "ovni = objeto circular por forma; avion_rojo = avión por color (anterior); brillo = original")
-    ap.add_argument("--objeto", choices=["punto", "avion", "circulo"], default="punto",
-                    help="fuente sintética: qué se dibuja. punto = láser; avion / circulo = silueta oscura sobre fondo claro")
+                         "ovni = objeto circular por forma; brillo = original")
+    ap.add_argument("--objeto", choices=["punto", "circulo"], default="punto",
+                    help="fuente sintética: qué se dibuja. punto = láser; circulo = silueta oscura sobre fondo claro "
+                         "(para --detector ovni). El avión no se simula: se prueba con cuadros reales")
     ap.add_argument("--enlace", choices=["nulo", "simulado", "trama"], default="nulo",
                     help="nulo: sin actuadores; simulado: ESP32 y ejes simulados; trama: ESP32 real")
     ap.add_argument("--puerto", help="por defecto /dev/ttyAMA0 (UART del header, pines 8 y 10)")
@@ -178,7 +179,7 @@ def lista_de_ajustes(a, P, con_camara):
     L += [
         Ajuste("detector", "Detector", "Objetivo", "opcion", a.detector, opciones=DETECTORES,
                ayuda="rojo = láser; luz = flash; avion = avión por forma; ovni = objeto circular por forma; "
-                     "avion_rojo = avión por color (anterior); brillo = pico de brillo (original). "
+                     "brillo = pico de brillo (original). "
                      "Al cambiarlo se aplica el perfil de ese objetivo (cámara, umbrales y predictor)."),
         Ajuste("rojo.v_umbral", "Umbral de rojo (plano V)", "Detector", "int", P.deteccion_roja.v_umbral, 129, 255, 1,
                detector="rojo", ayuda="128 = neutro, 255 = rojo puro."),
@@ -216,10 +217,6 @@ def lista_de_ajustes(a, P, con_camara):
                  ayuda="Activa: se descarta una detección que cae a más de salto_max_px (80 px) de la anterior. "
                        "Desactivarla para probar y ajustar sin esa protección. El estimador (gating) sigue activo.")
           for nombre in DETECTORES],
-        Ajuste("avion_rojo.v_umbral", "Umbral de rojo (plano V)", "Detector", "int", P.deteccion_avion.v_umbral, 129, 255, 1,
-               detector="avion_rojo", ayuda="128 = neutro, 255 = rojo puro."),
-        Ajuste("avion_rojo.min_pix", "Píxeles mínimos (plano V)", "Detector", "int", P.deteccion_avion.min_pix, 1, 500, 1, "px",
-               detector="avion_rojo"),
         Ajuste("brillo.umbral_abs", "Umbral de brillo", "Detector", "int", P.deteccion.umbral_abs, 1, 255, 1,
                detector="brillo"),
         #? Piso de 0,60: con orden 3 a 80 fps, más abajo la predicción amplifica el ruido y la traza
@@ -292,7 +289,7 @@ class AjustesEnVivo:
         self.aj, self.a, self.P, self.fuente = aj, a, P, fuente
         self.detectores, self.ref, self.sup = detectores, ref, sup
         self.params_det = {"rojo": P.deteccion_roja, "luz": P.deteccion_luz, "avion": P.forma_avion,
-                           "ovni": P.forma_ovni, "avion_rojo": P.deteccion_avion, "brillo": P.deteccion}
+                           "ovni": P.forma_ovni, "brillo": P.deteccion}
 
     def aplicar(self, det, t):
         """Una vez por cuadro, antes de detectar. Devuelve el detector vigente (puede haber cambiado)."""
@@ -525,7 +522,7 @@ def main():
     tiempo_virtual = a.fuente == "sintetica" and not a.tiempo_real
     retardo_ns = int(P.lazo.retardo_enlace_s * 1e9)
 
-    #* Los cuatro detectores quedan creados: cambiar de objetivo desde el tablero es elegir otro.
+    #* Todos los detectores quedan creados: cambiar de objetivo desde el tablero es elegir otro.
     detectores = crear_detectores(P, RUTA_FORMAS)
     if a.detector not in detectores:
         raise SystemExit(f"El detector '{a.detector}' necesita OpenCV: sudo apt install python3-opencv")

@@ -146,7 +146,7 @@ def main():
     p = parametros(a.familia, a.cambios)
     print(f"{len(cuadros)} cuadros en {len({c[0] for c in cuadros})} etiquetas | plantillas de '{a.familia}': "
           f"{', '.join(banco.de_la_familia(p.formas))}"
-          f"{'' if banco.aprendidas else '  (AVISO: sólo genéricas; aprender las del avión real)'}")
+          f"{'' if banco.aprendidas else '  (AVISO: formas.json sin vistas aprendidas; aprender las del avión real con aprender_forma.py)'}")
 
     if a.barrer:
         clave, _, valores = a.barrer.partition("=")

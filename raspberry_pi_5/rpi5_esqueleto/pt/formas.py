@@ -30,16 +30,12 @@ identidad). Dos vistas inclinadas del mismo objeto plano quedan así iguales sal
 que el módulo de Fourier ya ignora. Con esto toda elipse queda convertida en círculo.
 """
 #* Lo que NO se compensa: el cambio de CARA. Un avión visto de lado y visto desde arriba son
-#* siluetas distintas, así que el banco guarda una plantilla por vista (planta, perfil...).
+#* siluetas distintas, así que el banco guarda una plantilla por vista (arriba, lado...).
 #* El alargamiento que se quita al normalizar no se pierde: se entrega aparte (alargamiento),
 #* para poder descartar figuras demasiado delgadas (un palo, un borde).
-#! La silueta "avion_perfil" NO está en el banco por defecto (18-11): es poco más que una mancha
-#! alargada con una aleta, y en la grabación real del avión aceptó como "avión" trozos sueltos
-#! (la punta de un ala, la nariz) en 44 de 336 cuadros. Con "avion_planta" sola: 0 de 336.
-#! Su polígono se conserva para las escenas sintéticas. La vista de lado hay que APRENDERLA.
-#? Las plantillas "avion_planta" y "avion_perfil" de este archivo son siluetas GENÉRICAS,
-#? dibujadas a mano. Sirven para probar. Con el avión real hay que aprender sus propias
-#? vistas (herramientas/aprender_forma.py), que se guardan en formas.json.
+#! No hay siluetas de avión incorporadas (retiradas el 18-11-2026: eran dibujos genéricos que
+#! no calzaban con el avión real). Las vistas del avión se APRENDEN del avión real con
+#! herramientas/aprender_forma.py y quedan en formas.json. La única incorporada es el círculo.
 import json
 import math
 import os
@@ -130,29 +126,15 @@ def alargamiento(contorno):
 # ---------------------------------------------------------------------------
 #* Siluetas incorporadas (polígonos en unidades arbitrarias; sólo importa la forma)
 # ---------------------------------------------------------------------------
-def _espejo(mitad):
-    """Polígono simétrico respecto del eje y a partir de su mitad derecha (de nariz a cola)."""
-    m = np.asarray(mitad, dtype=np.float64)
-    izq = m[-2:0:-1] * np.array([-1.0, 1.0])
-    return np.vstack([m, izq])
-
-
 def poligono(nombre):
-    """Polígono de una silueta incorporada: 'circulo', 'avion_planta', 'avion_perfil'."""
+    """Polígono de una silueta incorporada. Sólo hay una: 'circulo'."""
     if nombre == "circulo":
         a = np.linspace(0, 2 * np.pi, 96, endpoint=False)
         return np.c_[np.cos(a), np.sin(a)]
-    if nombre == "avion_planta":           # visto desde arriba: fuselaje, alas en flecha, cola
-        return _espejo([(0.0, 1.0), (0.07, 0.88), (0.08, 0.30), (0.95, -0.22), (0.95, -0.36), (0.08, -0.06),
-                        (0.08, -0.70), (0.36, -0.90), (0.36, -0.99), (0.05, -0.90), (0.0, -1.0)])
-    if nombre == "avion_perfil":           # visto de lado: fuselaje grueso (juguete), deriva y motor bajo el ala
-        return np.array([(1.0, -0.02), (0.88, 0.10), (0.70, 0.15), (-0.50, 0.15), (-0.86, 0.58), (-1.0, 0.58),
-                         (-0.88, 0.12), (-1.0, 0.06), (-0.94, -0.06), (-0.25, -0.14), (-0.10, -0.30), (0.25, -0.30),
-                         (0.32, -0.14), (0.80, -0.13)], dtype=np.float64)
     raise KeyError(nombre)
 
 
-INCORPORADAS = ("circulo", "avion_planta")
+INCORPORADAS = ("circulo",)
 
 
 class BancoDeFormas:
@@ -171,10 +153,9 @@ class BancoDeFormas:
 
     def de_la_familia(self, familias):
         """Plantillas cuyo nombre es una de `familias` o empieza por ella y '_'
-        ('avion' -> avion_planta y las aprendidas avion_arriba, avion_lado...)."""
+        ('avion' -> las aprendidas avion_arriba, avion_lado...). Vacío si no hay ninguna."""
         fam = (familias,) if isinstance(familias, str) else tuple(familias)
-        #* Si hay vistas aprendidas de la familia, mandan ellas: las genéricas sólo se usan
-        #* mientras no se haya aprendido ninguna.
+        #* Si hay vistas aprendidas de la familia, mandan ellas sobre la incorporada (círculo).
         nombres = [n for n in self.plantillas if any(n == f or n.startswith(f + "_") for f in fam)]
         aprendidas = [n for n in nombres if n in self.aprendidas]
         return {n: self.plantillas[n] for n in (aprendidas or nombres)}

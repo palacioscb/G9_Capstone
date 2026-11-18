@@ -59,27 +59,16 @@ class Deteccion:
     area_max: int = 400
     salto_max_px: float = 80.0    # salto máximo entre cuadros consecutivos válidos [px]
 
-@dataclass
-class DeteccionAvion:
-    v_umbral: int = 170          # Umbral fijo de seguridad
-    min_pix: int = 3             # Píxeles mínimos en el plano V
-    roi_r: int = 20
-    b_global: int = 4
-    bloque_ventana: int = 2
-    bloque_global: int = 8
-    ventana_seguimiento: int = 80
-    salto_max_px: float = 80.0
 
 @dataclass
 class DeteccionForma:
     #* Detector por FORMA (plano Y): silueta por contraste local + descriptores de Fourier.
     #* Una instancia por objetivo: el avión y el objeto circular (ver Parametros).
-    formas: tuple = ("avion",)    # familias de plantillas aceptadas: 'avion' -> avion_planta y las aprendidas avion_*
+    formas: tuple = ("avion",)    # familias de plantillas aceptadas: 'avion' -> las aprendidas avion_* (formas.json)
     polaridad: str = "oscuro"     # "oscuro": más oscuro que su entorno; "claro": más claro; "ambos"
     #! "ambos" cuesta el doble y trae falsos: el fondo claro encerrado entre el ala y la cola de
-    #! un avión oscuro es, para el detector, una figura clara más. En escenas sintéticas con
-    #! distractores, alguna figura ajena pasa el umbral en el 2 % de los cuadros con "oscuro" y
-    #! en el 27–49 % con "ambos". Elegir la polaridad que corresponda a la escena de la demostración.
+    #! un avión oscuro es, para el detector, una figura clara más. Elegir la polaridad que
+    #! corresponda a la escena de la demostración.
     contraste_min: int = 25       # diferencia mínima de gris con el entorno [0..255]
     frac_borde: float = 0.5       # el borde de la figura se toma donde el contraste cae a esta fracción de su máximo
     tam_max_px: int = 91          # el objetivo debe ser más ANGOSTO que esto (ancho de su parte más gruesa) [px]
@@ -92,9 +81,10 @@ class DeteccionForma:
     reducir_busqueda: int = 2     # la búsqueda en el cuadro completo se hace a 1/2 de resolución
     ventana_seguimiento: int = 224  # lado de la ventana en SEGUIMIENTO [px]; debe contener al objetivo completo
     salto_max_px: float = 80.0
-    #? Valores de partida, de escenas sintéticas (herramientas/evaluar_forma.py). dist_max:
-    #? el mismo avión, girado e inclinado, da 0,07 de mediana y 0,13 en el percentil 95 (0,19
-    #? si mide menos de 45 px); rectángulos, manchas y una mano quedan sobre 0,28.
+    #* dist_max, con las fotos del avión real (18-11-2026, celular, llevadas a 640x480): la vista
+    #* desde arriba da 0,04–0,08 y la de lado 0,11–0,18; en las fotos de fondo sin avión, la figura
+    #* más parecida queda en 0,21. El margen es estrecho: 0,18 acepta todo lo medido y nada del fondo.
+    #? Falta repetirlo con la cámara de la RPi (herramientas/grabar_cuadros.py y reproducir_forma.py).
 
 
 @dataclass
@@ -228,13 +218,13 @@ PERFILES = {
     "laser": {"detector": "rojo", "exposicion_us": 2000, "ganancia": 1.0},
     "luz": {"detector": "luz", "exposicion_us": 2000, "ganancia": 2.0},
     #* Avión por FORMA (18-11-2026). Perfil COMPLETO: no depende del objetivo que se usó antes.
-    #*   Cámara: 8000 µs y ganancia 4,0, la única condición MEDIDA con el avión real (grabación
-    #*     medicion_avion: avión en 50 de gris, entorno en 76–93, sin saturación). El valor
-    #*     anterior (6000 µs, ganancia 2,0) venía del detector por color y recoge 2,7 veces menos luz.
     #*   Umbrales: los de Parametros.forma_avion (más abajo está de dónde sale cada uno).
     #*   Predictor: λ y piso del gating por defecto, para deshacer lo que deje otro perfil.
-    #? Las ganancias de color son las de Captura. La grabación se hizo sin fijarlas, así que el
-    #? nivel de gris puede diferir algo: revisar el contraste una vez en el tablero y regrabar el perfil.
+    #? Cámara (8000 µs, ganancia 4,0) y contraste mínimo (12): valores de PARTIDA, sin respaldo
+    #? vigente. Salieron de una grabación del 18-11 que el equipo retiró del repositorio como
+    #? dato anterior. Ajustarlos en el tablero con el avión real frente a
+    #? la cámara (el avión debe verse claramente más oscuro que el fondo, sin saturar el fondo)
+    #? y usar "Guardar perfil" con el nombre avion.
     "avion": {"detector": "avion", "exposicion_us": 8000, "ganancia": 4.0, "color_rojo": 2.0, "color_azul": 1.5,
               "avion.polaridad": "oscuro", "avion.contraste_min": 12, "avion.dist_max": 0.18,
               "avion.tam_max_px": 91, "avion.area_min": 150, "avion.alargamiento_max": 8.0,
@@ -258,21 +248,16 @@ class Parametros:
     lazo: LazoExterno = field(default_factory=LazoExterno)
     actuador: Actuador = field(default_factory=Actuador)
     enlace: Enlace = field(default_factory=Enlace)
-    deteccion_avion: DeteccionAvion = field(default_factory=DeteccionAvion)
     #* Detectores por forma (18-11-2026). El círculo es una figura simple: se le exige más
-    #* parecido (0,06) porque muchas manchas suaves se le acercan (0,04–0,12). Con 0,06 un
-    #* disco pasa en el 99 % de las escenas sintéticas, y una mancha ajena en el 3 %.
+    #* parecido (0,06) porque muchas manchas suaves se le acercan.
+    #? Valor de partida: falta medirlo con el objeto real.
     #? Polaridad "ambos" para el objeto no identificado: emite luz, pero no se sabe si se verá
     #? como disco claro o como cuerpo oscuro con luces. Fijarla cuando se conozca el objeto.
-    #* contraste_min del avión = 12, medido en la grabación real del 18-11 (8000 µs, ganancia 4):
-    #* el avión queda en 50 de gris sobre un fondo que va de 64 a 99, es decir 14 a 49 de
-    #* contraste según la zona del cuadro. El fondo vacío llega a 17 en algún píxel, pero no forma
-    #* manchas de 150 px con umbral 12 o más (con 10 aparecen 2 en 24 cuadros).
-    #? Si se mejora el contraste (más luz sobre el fondo, fondo más claro), volver a subirlo.
+    #? contraste_min del avión = 12: valor de PARTIDA (ver la nota del perfil «avion», más arriba).
+    #? Si aparecen sombras o manchas del fondo, subirlo; si el avión se ve tenue, mejorar la luz antes de bajarlo.
     #* alargamiento_max del avión = 8. De lado, el avión real mide 4,7 a 5,7 de largo/ancho (fotos
-    #* del 18-11, sin la sombra) y 5,1 de mediana / 5,7 en el percentil 95 en la grabación con la
-    #* cámara: con el límite general de 6 quedaba al borde. Con 8, sobre los 24 cuadros de fondo de
-    #* la cámara y las 3 fotos de fondo no aparece ninguna detección (igual que con 6).
+    #* del 18-11, sin la sombra): con el límite general de 6 quedaba al borde. Con 8 no aparece
+    #* ninguna detección en las 3 fotos de fondo (igual que con 6).
     #* dist_max = 0,18 (el general): la vista de lado da 0,11–0,18 en las fotos; con 0,15 se pierde una de cinco.
     forma_avion: DeteccionForma = field(default_factory=lambda: DeteccionForma(contraste_min=12, alargamiento_max=8.0))
     forma_ovni: DeteccionForma = field(default_factory=lambda: DeteccionForma(

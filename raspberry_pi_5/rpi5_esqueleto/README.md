@@ -14,7 +14,7 @@ El mismo código corre en el PC con una cámara simulada y un ESP32 simulado, en
 |---|---|---|
 | `pt/parametros.py` | PI-7 y todos | Todos los números con unidades. Ya actualizado a las decisiones del 25 % (80 fps, exposición 2 ms, RLS orden 3 con λ = 0,80) |
 | `pt/camara.py` | PI-1 | `FuenteCamara`: planos Y y V, balance de blancos fijo. `FuenteSintetica`: láser rojo, lámpara blanca opcional y escena que responde a la pose simulada |
-| `pt/deteccion.py` | PI-2 a PI-6 | `DetectorForma` (avión y objeto circular por FORMA, plano Y), `DetectorLaserRojo` (plano V con confirmación en Y, traído de `laser_op.py`), `DetectorLuz`, `DetectorLaser` (brillo, el original) y `DetectorAvionRojo` (avión por color, respaldo) |
+| `pt/deteccion.py` | PI-2 a PI-6 | `DetectorForma` (avión y objeto circular por FORMA, plano Y), `DetectorLaserRojo` (plano V con confirmación en Y, traído de `laser_op.py`), `DetectorLuz` y `DetectorLaser` (brillo, el original) |
 | `pt/formas.py` | PI-3 / PI-6 | Descriptores de Fourier del contorno, normalización afín y banco de plantillas (incorporadas y aprendidas en `formas.json`) |
 | `pt/geometria.py` | CS-1 | Píxel → ángulo, y **dirección del objetivo en el mundo** con la pose actual (composición exacta de rotaciones) |
 | `pt/prediccion.py` | EP-1 a EP-5 | Gating conjunto de pan y tilt, reinicio informado (sin pasar por PÉRDIDA), RLS del equipo (`pt/rls_predictor.py`, sin cambios), predicción y velocidad al instante de aplicación |
@@ -35,7 +35,6 @@ El mismo código corre en el PC con una cámara simulada y un ESP32 simulado, en
 | `herramientas/aprender_forma.py` | DET-2 | Aprende una vista del objetivo real (cámara o fotos) y la guarda en `formas.json` |
 | `herramientas/grabar_cuadros.py` | DET-2 | Graba cuadros (plano Y, PNG sin pérdida) con la cámara, sin la torreta, para probar el detector después en el PC |
 | `herramientas/reproducir_forma.py` | DET-6 | Corre el detector por forma sobre cuadros grabados: tabla por etiqueta, CSV, imágenes anotadas, `--set` y `--barrer` de parámetros |
-| `herramientas/evaluar_forma.py` | DET-6 | Aciertos, falsos positivos, error de centroide y tiempo del detector por forma, en escenas sintéticas |
 | `pruebas_unitarias/` | — | 49 pruebas sin hardware (43 del esqueleto y 6 del recorte) |
 
 Los comentarios usan colores: `#!` rojo (seguridad y riesgos), `#*` verde (lo importante), `#?` azul (supuestos por verificar), `#todo` naranjo (pendientes).
@@ -80,7 +79,7 @@ No usar `/dev/serial0`: en la RPi 5 apunta al conector de depuración (`ttyAMA10
 - `--detector rojo` es el láser rojo, por color.
 - `--detector luz` es el flash del celular. Viene de `mi_proyecto_camara/luz_2.py`. Ninguna otra luz blanca intensa puede quedar en el cuadro.
 - `--detector brillo` es el original.
-- `--detector avion` es el avión **por forma** (silueta en el plano Y, sin usar el color); `ovni` es lo mismo para un objeto circular; `avion_rojo` es el detector por color anterior, que queda de respaldo. Ver la sección 5.
+- `--detector avion` es el avión **por forma** (silueta en el plano Y, sin usar el color); `ovni` es lo mismo para un objeto circular. El detector del avión por color se retiró el 18-11. Ver la sección 5.
 
 Antes de medir: `vcgencmd get_throttled` debe dar `0x0`. Dependencias: `sudo apt install -y python3-serial python3-opencv python3-matplotlib`.
 
@@ -140,7 +139,7 @@ python3 main.py --fuente camara --enlace trama --habilitar --duracion 0 --monito
 | Grupo | Qué se puede cambiar | Efecto en el lazo |
 |---|---|---|
 | Cámara | exposición, ganancia analógica, ganancias de color (rojo, azul) | `set_controls` de Picamera2; la cámara lo toma unos cuadros después. El tablero muestra lo que la cámara informa |
-| Objetivo | detector: `rojo`, `luz`, `avion`, `ovni`, `avion_rojo`, `brillo` | detector y estimador parten de cero y el supervisor vuelve a BÚSQUEDA; la plataforma **retiene** hasta adquirir el objetivo nuevo |
+| Objetivo | detector: `rojo`, `luz`, `avion`, `ovni`, `brillo` | detector y estimador parten de cero y el supervisor vuelve a BÚSQUEDA; la plataforma **retiene** hasta adquirir el objetivo nuevo |
 | Detector | umbrales del detector activo (en `avion` y `ovni`: polaridad, contraste, parecido exigido, ancho máximo, área mínima, alargamiento, borde, quitar lo delgado, rechazo de saltos) | inmediato, sin interrumpir el seguimiento |
 | Recorte de imagen | zona de trabajo (cuadrilátero) para todos los detectores | inmediato; apagado por defecto (sección 6) |
 | Predicción | λ (0,60 a 0,99), piso del gating, orden del RLS, feedforward ω_ff | λ, gating y ω_ff sin interrupción; cambiar el orden reinicia el estimador |
@@ -150,7 +149,7 @@ python3 main.py --fuente camara --enlace trama --habilitar --duracion 0 --monito
   - **Guardar perfil** escribe los valores vigentes en `perfiles.json` (junto a `main.py`), que tiene prioridad en las corridas siguientes. Conviene subirlo al repositorio una vez ajustado.
   - **El perfil se aplica solo** en dos casos, para no repetir los ajustes a mano: al elegir otro detector en el tablero, y al partir `main.py` con `--fuente camara --detector <objetivo>`. Se usa el perfil que se llama igual que el detector; si no existe, el primero cuyo campo `detector` es ése (`laser` para `rojo`). Lo escrito en la línea de comandos (`--exposicion`, `--ganancia`) manda sobre el perfil.
   - Con `--sin-perfil` no se aplica en ninguno de los dos casos (los botones de perfil siguen disponibles). Con la fuente sintética no se aplica al partir, para que las simulaciones no dependan de `perfiles.json`.
-  - El perfil `avion` es completo (cámara 8000 µs y ganancia 4,0, umbrales de forma, λ y piso del gating): el origen de cada valor está comentado en `pt/parametros.py`.
+  - El perfil `avion` es completo (cámara, umbrales de forma, λ y piso del gating): el origen de cada valor está comentado en `pt/parametros.py`. La cámara (8000 µs, ganancia 4,0) y el contraste mínimo (12) son valores de partida: ajustarlos con el avión real frente a la cámara y usar **Guardar perfil**.
 - **Cómo viaja un cambio:** el navegador hace `POST /ajustes`; el servidor valida clave, tipo y rango (`pt/ajustes.py`) y lo encola; el lazo lo aplica al comienzo del cuadro siguiente y lo confirma. El tablero muestra siempre el valor vigente.
 - **Registro:** el CSV tiene las columnas `detector`, `exp_us`, `ganancia`, `lam` y `ff` (feedforward activo), así que una corrida con varios objetivos se puede separar después.
 - **Análisis:** `herramientas/analizar_registro.py` parte cada CSV en tramos con el mismo detector y feedforward, analiza cada uno y entrega una tabla comparativa.
@@ -178,7 +177,7 @@ python3 herramientas/comparar_ganancias_ff.py --reusar --detector avion --lab-a 
 ```
 
 Deja en `docs/figuras/` la tabla (`comp_ganancias_ff.csv` y `.md`) y las figuras (`comp_ganancias_ff_barras`, `comp_ganancias_ff_traza_sim` y `_traza_lab`, en PNG y PDF). En el ESP32 real las ganancias se cambian con `python3 herramientas/fijar_ganancias.py B` (manda `k pan 5 6.25` y `k tilt 20 100` por el UART del enlace, con `main.py` detenido; no quedan guardadas tras un reinicio). `--ganancias-sim` sólo afecta al lazo simulado.
-- **Detección por forma (revisión del 18-11):** el detector `avion` ya no usa el color: reconoce la silueta en el plano Y (contraste local y descriptores de Fourier del contorno). `ovni` busca una figura circular con el mismo método. El detector por color anterior queda como `avion_rojo`. Requieren OpenCV. Antes de usarlo con el avión real hay que aprender sus vistas: `python3 herramientas/aprender_forma.py --nombre avion_arriba --camara --exposicion 6000 --ganancia 2`. Prueba en el PC: `python3 main.py --enlace simulado --objeto avion --detector avion --feedforward`. Método, resultados y condiciones de operación: `docs/deteccion_por_forma.md`. Flujo de trabajo completo: sección 5.
+- **Detección por forma (revisión del 18-11):** el detector `avion` ya no usa el color: reconoce la silueta en el plano Y (contraste local y descriptores de Fourier del contorno). `ovni` busca una figura circular con el mismo método. Requieren OpenCV. Las vistas del avión se aprenden del avión real y quedan en `formas.json` (hoy: `avion_arriba` y `avion_lado`); para rehacer una: `python3 herramientas/aprender_forma.py --nombre avion_arriba --camara --exposicion 8000 --ganancia 4`. El avión no se simula: se prueba con cuadros reales (`grabar_cuadros.py` y `reproducir_forma.py`). Método, resultados y condiciones de operación: `docs/deteccion_por_forma.md`. Flujo de trabajo completo: sección 5.
 - **Predictor (revisión del 17-11):** el tablero tiene tres controles más en el grupo Predicción: "Reinicio sin pasar por PÉRDIDA", "Gating conjunto (pan y tilt)" y "Oclusión: tope de la aceleración" (apagado, valor 0). Apagar los dos primeros deja el predictor como antes. El CSV agrega `gating_d` (innovación en veces el umbral; mayor que 1 es rechazo), `sigma_pan` y `sigma_tilt`, y `est_u` / `est_w` pueden valer `reinicio`. `analizar_registro.py` los resume en su punto 5, para ajustar el piso del gating con datos. Detalle y mediciones: `docs/prediccion_rls.pdf`, sección 6.1.
 - **Riesgo asumido:** cualquier equipo conectado a la misma red puede cambiar estos valores, y con `--habilitar` un cambio de objetivo o de umbral termina moviendo la plataforma.
   - No existe ruta para habilitar motores, mandar referencias o comandos al ESP32, ni para cambiar límites o ganancias del PI.
@@ -190,24 +189,24 @@ Deja en `docs/figuras/` la tabla (`comp_ganancias_ff.csv` y `.md`) y las figuras
 
 **Por qué:** las pruebas serán a contraluz, así que el color y el brillo no sirven. `avion` reconoce la silueta: contraste local en el plano Y, contorno, descriptor de Fourier y comparación con las plantillas de `formas.json`. Método y resultados: `docs/deteccion_por_forma.md`.
 
-**Plantillas.** Las genéricas (`avion_planta`, `avion_perfil`) no calzan con el avión real. Hay que aprender cada vista con el avión del equipo:
+**Plantillas.** No hay siluetas de avión incorporadas: cada vista se aprende con el avión del equipo. Hoy `formas.json` tiene `avion_arriba` y `avion_lado`, aprendidas de fotos de celular (18-11). Para aprender o rehacer una vista:
 
 ```bash
-python3 herramientas/aprender_forma.py --nombre avion_planta --camara --exposicion 2000 --ganancia 1
+python3 herramientas/aprender_forma.py --nombre avion_arriba --camara --exposicion 8000 --ganancia 4
 python3 herramientas/aprender_forma.py --nombre avion_lejos  --imagen registros/capturas/avion_lado_2m/*.png   # o desde cuadros grabados
 python3 herramientas/aprender_forma.py --listar
 ```
 
-- **El nombre debe empezar con `avion_`.** Con otro nombre el detector no la usa y sigue con las genéricas.
-- Cuando hay vistas aprendidas, mandan ellas. Una plantilla por cara del avión, y se puede aprender una a cada distancia.
+- **El nombre debe empezar con `avion_`.** Con otro nombre el detector no la usa.
+- Sin ninguna vista aprendida, el detector `avion` no detecta y el tablero lo avisa ("sin plantillas de avion"). Una plantilla por cara del avión, y se puede aprender una a cada distancia.
 - El avión se debe ver completo, sobre fondo liso y con un soporte delgado (hilo o palo de menos de unos 8 mm a 2 m). Un palo grueso se funde con la silueta.
 
 **Probar sin instalar la torreta.** Basta la cámara de la RPi apuntando a la escena:
 
 ```bash
 # [RPi, con main.py detenido: la cámara no se comparte]
-python3 herramientas/grabar_cuadros.py --etiqueta avion_planta_2m --distancia 2 --exposicion 2000 --ganancia 1
-python3 herramientas/grabar_cuadros.py --etiqueta sin_avion --cuadros 30 --exposicion 2000 --ganancia 1   # "sin_..." = escena sin avión
+python3 herramientas/grabar_cuadros.py --etiqueta avion_arriba_2m --distancia 2 --exposicion 8000 --ganancia 4
+python3 herramientas/grabar_cuadros.py --etiqueta sin_avion --cuadros 30 --exposicion 8000 --ganancia 4   # "sin_..." = escena sin avión
 # [PC] copiar registros/capturas con scp -r y probar cuantas veces haga falta
 python3 herramientas/reproducir_forma.py registros/capturas/* --roi "x1,y1,x2,y2,x3,y3,x4,y4"
 python3 herramientas/reproducir_forma.py registros/capturas/* --set dist_max=0.25 --set contraste_min=60
@@ -266,7 +265,6 @@ Quita de la vista del **detector** todo lo que está fuera de un cuadrilátero (
 ## Resultados en simulación (PC)
 
 - **Detector rojo con una lámpara blanca en escena:** 160 de 160 cuadros, error de 0,41 px RMS (unos 0,05°, bajo el micropaso de 0,1125°). El detector por brillo se va a la lámpara en todos los cuadros (error de 254 px).
-- **Detector por forma con plantilla aprendida** (escena sintética, avión de 12 × 7 cm): acierta el 100 % de los cuadros hasta 3 m con ventana y travesaños, con unos 3 ms por cuadro. A 4 m (61 px de área) ya no detecta. Esto es simulación: falta medirlo con el avión real a contraluz.
 - **Modelo de pid_t_2:** reproduce los polos del PDF (pan −4,60 ± j141,8, −2,60, −2,41; tilt −58,3 ± j1365, −10,3, −9,75).
 - **El PI del firmware compilado en C++ y su réplica en Python** dan la misma salida (|Δω| < 8·10⁻⁴ °/s en 3000 pasos, 1358 de ellos con límites activos).
 - **Lazo cerrado simulado**, 10 s a 80 fps, objetivo de hasta 24,7°/s con dos oclusiones, ganancias de arranque y la ley final del firmware:
