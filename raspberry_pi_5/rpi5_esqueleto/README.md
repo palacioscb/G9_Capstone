@@ -14,7 +14,8 @@ El mismo código corre en el PC con una cámara simulada y un ESP32 simulado, en
 |---|---|---|
 | `pt/parametros.py` | PI-7 y todos | Todos los números con unidades. Ya actualizado a las decisiones del 25 % (80 fps, exposición 2 ms, RLS orden 3 con λ = 0,80) |
 | `pt/camara.py` | PI-1 | `FuenteCamara`: planos Y y V, balance de blancos fijo. `FuenteSintetica`: láser rojo, lámpara blanca opcional y escena que responde a la pose simulada |
-| `pt/deteccion.py` | PI-2 a PI-6 | `DetectorLaserRojo` (plano V con confirmación en Y, traído de `laser_op.py`) y `DetectorLaser` (brillo, el original) |
+| `pt/deteccion.py` | PI-2 a PI-6 | `DetectorForma` (avión y objeto circular por FORMA, plano Y), `DetectorLaserRojo` (plano V con confirmación en Y, traído de `laser_op.py`), `DetectorLuz`, `DetectorLaser` (brillo, el original) y `DetectorAvionRojo` (avión por color, respaldo) |
+| `pt/formas.py` | PI-3 / PI-6 | Descriptores de Fourier del contorno, normalización afín y banco de plantillas (incorporadas y aprendidas en `formas.json`) |
 | `pt/geometria.py` | CS-1 | Píxel → ángulo, y **dirección del objetivo en el mundo** con la pose actual (composición exacta de rotaciones) |
 | `pt/prediccion.py` | EP-1 a EP-5 | Gating conjunto de pan y tilt, reinicio informado (sin pasar por PÉRDIDA), RLS del equipo (`pt/rls_predictor.py`, sin cambios), predicción y velocidad al instante de aplicación |
 | `pt/control.py` | CS-2 | `ReferenciaVisual`: θ_ref y ω_ff a partir de la estimación; retención fuera de SEGUIMIENTO |
@@ -30,7 +31,9 @@ El mismo código corre en el PC con una cámara simulada y un ESP32 simulado, en
 | `herramientas/analizar_registro.py` | CTL-7 | Presupuesto medido de una corrida (latencias, detección, error de centrado, atraso) y comparación por tramos |
 | `herramientas/comparar_ganancias_ff.py` | CTL-7 | Tabla y figuras: con y sin feedforward para cada grupo de ganancias del PI, simulado y medido |
 | `herramientas/fijar_ganancias.py` | CTL-7 | Fija en el ESP32 las ganancias de un grupo (comando `k` de la consola), con `main.py` detenido |
-| `pruebas_unitarias/` | — | 39 pruebas sin hardware |
+| `herramientas/aprender_forma.py` | DET-2 | Aprende una vista del objetivo real (cámara o fotos) y la guarda en `formas.json` |
+| `herramientas/evaluar_forma.py` | DET-6 | Aciertos, falsos positivos, error de centroide y tiempo del detector por forma, en escenas sintéticas |
+| `pruebas_unitarias/` | — | 43 pruebas sin hardware |
 
 Los comentarios usan colores: `#!` rojo (seguridad y riesgos), `#*` verde (lo importante), `#?` azul (supuestos por verificar), `#todo` naranjo (pendientes).
 
@@ -166,6 +169,7 @@ python3 herramientas/comparar_ganancias_ff.py --reusar --detector avion --lab-a 
 ```
 
 Deja en `docs/figuras/` la tabla (`comp_ganancias_ff.csv` y `.md`) y las figuras (`comp_ganancias_ff_barras`, `comp_ganancias_ff_traza_sim` y `_traza_lab`, en PNG y PDF). En el ESP32 real las ganancias se cambian con `python3 herramientas/fijar_ganancias.py B` (manda `k pan 5 6.25` y `k tilt 20 100` por el UART del enlace, con `main.py` detenido; no quedan guardadas tras un reinicio). `--ganancias-sim` sólo afecta al lazo simulado.
+- **Detección por forma (revisión del 18-11):** el detector `avion` ya no usa el color: reconoce la silueta en el plano Y (contraste local y descriptores de Fourier del contorno). `ovni` busca una figura circular con el mismo método. El detector por color anterior queda como `avion_rojo`. Requieren OpenCV. Antes de usarlo con el avión real hay que aprender sus vistas: `python3 herramientas/aprender_forma.py --nombre avion_arriba --camara --exposicion 6000 --ganancia 2`. Prueba en el PC: `python3 main.py --enlace simulado --objeto avion --detector avion --feedforward`. Método, resultados y condiciones de operación: `docs/deteccion_por_forma.md`.
 - **Predictor (revisión del 17-11):** el tablero tiene tres controles más en el grupo Predicción: "Reinicio sin pasar por PÉRDIDA", "Gating conjunto (pan y tilt)" y "Oclusión: tope de la aceleración" (apagado, valor 0). Apagar los dos primeros deja el predictor como antes. El CSV agrega `gating_d` (innovación en veces el umbral; mayor que 1 es rechazo), `sigma_pan` y `sigma_tilt`, y `est_u` / `est_w` pueden valer `reinicio`. `analizar_registro.py` los resume en su punto 5, para ajustar el piso del gating con datos. Detalle y mediciones: `docs/prediccion_rls.pdf`, sección 6.1.
 - **Riesgo asumido:** cualquier equipo conectado a la misma red puede cambiar estos valores, y con `--habilitar` un cambio de objetivo o de umbral termina moviendo la plataforma.
   - No existe ruta para habilitar motores, mandar referencias o comandos al ESP32, ni para cambiar límites o ganancias del PI.

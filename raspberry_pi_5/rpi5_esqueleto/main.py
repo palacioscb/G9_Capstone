@@ -34,11 +34,29 @@ import numpy as np
 
 from pt.parametros import Parametros, PERFILES
 from pt.geometria import Geometria
-from pt.deteccion import DetectorLaser, DetectorLaserRojo, DetectorLuz, DetectorAvionRojo
+from pt.deteccion import DetectorLaser, DetectorLaserRojo, DetectorLuz, DetectorAvionRojo, DetectorForma
 from pt.supervisor import Supervisor, Estado
 from pt.control import ReferenciaVisual
 from pt.enlace import EnlaceNulo, EnlaceTrama, EnlaceSimulado
 from pt.registro import Registro
+
+#* Objetivos que se pueden elegir (opción --detector y tablero).
+DETECTORES = ("rojo", "luz", "avion", "ovni", "avion_rojo", "brillo")
+
+
+def crear_detectores(P, ruta_formas=None):
+    """Todos los detectores creados de una vez: cambiar de objetivo es elegir otro."""
+    d = {"rojo": DetectorLaserRojo(P.deteccion_roja), "luz": DetectorLuz(P.deteccion_luz),
+         "avion_rojo": DetectorAvionRojo(P), "brillo": DetectorLaser(P.deteccion)}
+    try:
+        from pt.formas import BancoDeFormas
+        banco = BancoDeFormas(ruta_formas)
+        d["avion"] = DetectorForma(P.forma_avion, banco)        #* por FORMA, sobre el plano Y
+        d["ovni"] = DetectorForma(P.forma_ovni, banco)
+    except ImportError as ex:
+        #! Los detectores por forma necesitan OpenCV (sudo apt install python3-opencv).
+        print(f"AVISO: sin detectores por forma (avion, ovni): {ex}")
+    return d
 
 
 def argumentos():
@@ -48,8 +66,11 @@ def argumentos():
     ap.add_argument("--fps", type=float, help="sobrescribe parametros.Captura.fps")
     ap.add_argument("--exposicion", type=int, help="µs; fija la exposición")
     ap.add_argument("--ganancia", type=float, help="ganancia analógica (luz_2.py usa 2,0)")
-    ap.add_argument("--detector", choices=["rojo", "luz", "brillo", "avion"], default="rojo",
-                    help="rojo = láser rojo (plano V); luz = flash del celular; brillo = original; avion = detector de avion")
+    ap.add_argument("--detector", choices=list(DETECTORES), default="rojo",
+                    help="rojo = láser rojo (plano V); luz = flash del celular; avion = avión por FORMA (plano Y); "
+                         "ovni = objeto circular por forma; avion_rojo = avión por color (anterior); brillo = original")
+    ap.add_argument("--objeto", choices=["punto", "avion", "circulo"], default="punto",
+                    help="fuente sintética: qué se dibuja. punto = láser; avion / circulo = silueta oscura sobre fondo claro")
     ap.add_argument("--enlace", choices=["nulo", "simulado", "trama"], default="nulo",
                     help="nulo: sin actuadores; simulado: ESP32 y ejes simulados; trama: ESP32 real")
     ap.add_argument("--puerto", help="por defecto /dev/ttyAMA0 (UART del header, pines 8 y 10)")
@@ -124,6 +145,8 @@ class Ventana:
 
 #* Archivo donde el tablero guarda los perfiles por objetivo ("Guardar perfil").
 RUTA_PERFILES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "perfiles.json")
+#* Siluetas aprendidas con herramientas/aprender_forma.py (vistas del avión real).
+RUTA_FORMAS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "formas.json")
 
 
 def lista_de_ajustes(a, P, con_camara):
@@ -145,18 +168,32 @@ def lista_de_ajustes(a, P, con_camara):
                   Ajuste("color_azul", "Ganancia de color azul", "Cámara", "float", float(c.ganancias_color[1]),
                          0.5, 4.0, 0.05, "×")]
     L += [
-        Ajuste("detector", "Detector", "Objetivo", "opcion", a.detector, opciones=("rojo", "luz", "avion", "brillo"),
-               ayuda="rojo = láser; luz = flash; avion = avión rojo; brillo = pico de brillo (original)."),
+        Ajuste("detector", "Detector", "Objetivo", "opcion", a.detector, opciones=DETECTORES,
+               ayuda="rojo = láser; luz = flash; avion = avión por forma; ovni = objeto circular por forma; "
+                     "avion_rojo = avión por color (anterior); brillo = pico de brillo (original)."),
         Ajuste("rojo.v_umbral", "Umbral de rojo (plano V)", "Detector", "int", P.deteccion_roja.v_umbral, 129, 255, 1,
                detector="rojo", ayuda="128 = neutro, 255 = rojo puro."),
         Ajuste("rojo.y_min", "Brillo mínimo (plano Y)", "Detector", "int", P.deteccion_roja.y_min, 0, 255, 1,
                detector="rojo", ayuda="0 = sin confirmación de brillo."),
         Ajuste("luz.umbral", "Umbral de brillo", "Detector", "int", P.deteccion_luz.umbral, 1, 255, 1, detector="luz"),
         Ajuste("luz.min_pix", "Píxeles mínimos", "Detector", "int", P.deteccion_luz.min_pix, 1, 500, 1, "px", detector="luz"),
-        Ajuste("avion.v_umbral", "Umbral de rojo (plano V)", "Detector", "int", P.deteccion_avion.v_umbral, 129, 255, 1,
-               detector="avion", ayuda="128 = neutro, 255 = rojo puro."),
-        Ajuste("avion.min_pix", "Píxeles mínimos (plano V)", "Detector", "int", P.deteccion_avion.min_pix, 1, 500, 1, "px",
-               detector="avion"),
+        *[aj for nombre, pf in (("avion", P.forma_avion), ("ovni", P.forma_ovni)) for aj in (
+            Ajuste(f"{nombre}.polaridad", "Objetivo respecto del fondo", "Detector", "opcion", pf.polaridad,
+                   opciones=("oscuro", "claro", "ambos"), detector=nombre,
+                   ayuda="oscuro = más oscuro que lo que lo rodea; claro = más claro. 'ambos' cuesta el doble y da más falsos."),
+            Ajuste(f"{nombre}.contraste_min", "Contraste mínimo", "Detector", "int", pf.contraste_min, 5, 200, 1,
+                   detector=nombre, ayuda="Diferencia de gris con el entorno. Bajarlo si el objetivo se ve tenue; subirlo si aparecen sombras."),
+            Ajuste(f"{nombre}.dist_max", "Parecido exigido (distancia máx.)", "Detector", "float", float(pf.dist_max), 0.02, 0.60, 0.01,
+                   detector=nombre, ayuda="0 = idéntico a la plantilla. Más alto acepta más vistas, y más figuras ajenas. El tablero muestra la distancia medida."),
+            Ajuste(f"{nombre}.tam_max_px", "Ancho máximo del objetivo", "Detector", "int", pf.tam_max_px, 21, 201, 2, "px",
+                   detector=nombre, ayuda="El objetivo debe ser más angosto que esto en su parte más gruesa."),
+            Ajuste(f"{nombre}.area_min", "Área mínima", "Detector", "int", pf.area_min, 30, 5000, 10, "px",
+                   detector=nombre),
+        )],
+        Ajuste("avion_rojo.v_umbral", "Umbral de rojo (plano V)", "Detector", "int", P.deteccion_avion.v_umbral, 129, 255, 1,
+               detector="avion_rojo", ayuda="128 = neutro, 255 = rojo puro."),
+        Ajuste("avion_rojo.min_pix", "Píxeles mínimos (plano V)", "Detector", "int", P.deteccion_avion.min_pix, 1, 500, 1, "px",
+               detector="avion_rojo"),
         Ajuste("brillo.umbral_abs", "Umbral de brillo", "Detector", "int", P.deteccion.umbral_abs, 1, 255, 1,
                detector="brillo"),
         #? Piso de 0,60: con orden 3 a 80 fps, más abajo la predicción amplifica el ruido y la traza
@@ -185,8 +222,8 @@ class AjustesEnVivo:
     def __init__(self, aj, a, P, fuente, detectores, ref, sup):
         self.aj, self.a, self.P, self.fuente = aj, a, P, fuente
         self.detectores, self.ref, self.sup = detectores, ref, sup
-        self.params_det = {"rojo": P.deteccion_roja, "luz": P.deteccion_luz,
-                           "avion": P.deteccion_avion, "brillo": P.deteccion}
+        self.params_det = {"rojo": P.deteccion_roja, "luz": P.deteccion_luz, "avion": P.forma_avion,
+                           "ovni": P.forma_ovni, "avion_rojo": P.deteccion_avion, "brillo": P.deteccion}
 
     def aplicar(self, det, t):
         """Una vez por cuadro, antes de detectar. Devuelve el detector vigente (puede haber cambiado)."""
@@ -296,7 +333,8 @@ class MonitorRed:
             self.srv.publicar_estado({
                 "t": (c.t_exp_ns - self.t0_ns) * 1e-9, "k": c.k, "fps": fps, "lat_ms": lat,
                 "modo": estado.value, "enlace_ok": bool(self.enl.ok()),
-                "detectado": bool(r.valido), "motivo": r.motivo or "detectado", "pico": r.pico, "area": r.area,
+                "detectado": bool(r.valido), "pico": r.pico, "area": r.area,
+                "motivo": r.motivo or (f"detectado: {r.forma} (d = {r.dist:.2f})" if r.forma else "detectado"),
                 "det_pct": 100.0 * sum(self.validos) / max(len(self.validos), 1),
                 "conf": e.confianza, "t_sin_med": e.t_sin_medicion,
                 "ref_px": list(self.ref_px) if self.ref_px else None,
@@ -386,6 +424,8 @@ def main():
         from pt.camara import FuenteSintetica
         W, H = P.captura.salida_px
         kw = {"lampara": (500, 100)} if a.lampara else {}
+        if a.objeto != "punto":
+            kw.update(objeto=a.objeto, fondo=150)        # silueta oscura sobre fondo claro
         if a.enlace == "simulado":
             kw.update(geometria=geo, pose_en=enl.pose_en)
         fuente = FuenteSintetica(W, H, P.captura.fps, a.duracion if a.duracion > 0 else 10.0,
@@ -399,8 +439,9 @@ def main():
     retardo_ns = int(P.lazo.retardo_enlace_s * 1e9)
 
     #* Los cuatro detectores quedan creados: cambiar de objetivo desde el tablero es elegir otro.
-    detectores = {"rojo": DetectorLaserRojo(P.deteccion_roja), "luz": DetectorLuz(P.deteccion_luz),
-                  "avion": DetectorAvionRojo(P), "brillo": DetectorLaser(P.deteccion)}
+    detectores = crear_detectores(P, RUTA_FORMAS)
+    if a.detector not in detectores:
+        raise SystemExit(f"El detector '{a.detector}' necesita OpenCV: sudo apt install python3-opencv")
     det = detectores[a.detector]
     ref = ReferenciaVisual(P, geo)
     sup = Supervisor(P.supervisor, con_actuadores=(a.enlace != "nulo"))
@@ -493,7 +534,8 @@ def main():
             reg.fila(k=k, t_exp_ns=c.t_exp_ns, t_entrega_ns=c.t_entrega_ns, t_fin_ns=t_fin,
                      lat_captura_ms=(c.t_entrega_ns - c.t_exp_ns) / 1e6, lat_total_ms=lat,
                      t_det_ms=r.t_proc_ms, estado=estado.value, valido=int(r.valido), motivo=r.motivo,
-                     u=r.u, w=r.w, pico=r.pico, area=r.area, dpan_deg=dpan, dtilt_deg=dtilt,
+                     u=r.u, w=r.w, pico=r.pico, area=r.area, forma=r.forma, forma_dist=r.dist,
+                     dpan_deg=dpan, dtilt_deg=dtilt,
                      pan_med=pose[0] if pose else float("nan"), tilt_med=pose[1] if pose else float("nan"),
                      pan_obj=med.pan, tilt_obj=med.tilt, pan_pred=e.u, tilt_pred=e.w,
                      vpan_pred=e.vu, vtilt_pred=e.vw, confianza=e.confianza, t_sin_med_s=e.t_sin_medicion,

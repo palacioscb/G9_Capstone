@@ -504,8 +504,8 @@ def test_ajustes_en_vivo_cambio_de_objetivo():
 
     Pp = Parametros()
     a = argparse.Namespace(detector="rojo")
-    dets = {"rojo": DetectorLaserRojo(Pp.deteccion_roja), "luz": DetectorLuz(Pp.deteccion_luz),
-            "avion": DetectorAvionRojo(Pp), "brillo": DetectorLaser(Pp.deteccion)}
+    dets = programa.crear_detectores(Pp)
+    assert set(dets) == set(programa.DETECTORES)                             # incluye los dos por forma (requieren OpenCV)
     ref = ReferenciaVisual(Pp, Geometria.desde_parametros(Pp))
     sup = Supervisor(Pp.supervisor)
     sup.estado = Estado.SEGUIMIENTO
@@ -525,9 +525,11 @@ def test_ajustes_en_vivo_cambio_de_objetivo():
     assert {"exposicion_us": 4000} in cam.pedidos and {"ganancias_color": (2.4, Pp.captura.ganancias_color[1])} in cam.pedidos
     assert aj.valores["lam"] == 0.9 and aj.valores["exposicion_us"] == 4000
 
-    aj.pedir({"detector": "avion", "avion.min_pix": 12})
+    aj.pedir({"detector": "avion", "avion.contraste_min": 40, "avion.polaridad": "claro", "avion_rojo.min_pix": 12})
     det = vivo.aplicar(det, 2.0)
-    assert det is dets["avion"] and a.detector == "avion" and Pp.deteccion_avion.min_pix == 12
+    assert det is dets["avion"] and a.detector == "avion" and det.p is Pp.forma_avion
+    assert Pp.forma_avion.contraste_min == 40 and Pp.forma_avion.polaridad == "claro" and Pp.deteccion_avion.min_pix == 12
+    assert aj.pedir({"avion.polaridad": "rojo"})[1]                          # opción inexistente: rechazada
     assert sup.estado == Estado.BUSQUEDA and "cambio de objetivo" in sup.bitacora[-1][3]
     assert ref.est.eu.rls is not rls_antes and ref.est.eu.rls.lam == 0.9     # estimador nuevo, con el λ vigente
     assert ref.est.eu.sigma_min == 0.3                                       # y con el piso de gating vigente
@@ -702,6 +704,96 @@ def test_ajustes_en_vivo_del_predictor():
     assert aj.pedir({"t_acel_max_s": 0.5})[1]                       # fuera de rango
     from pt.registro import COLUMNAS
     assert {"gating_d", "sigma_pan", "sigma_tilt"} <= set(COLUMNAS)
+
+
+def test_formas_descriptor_de_fourier_invariante():
+    """pt/formas.py: el descriptor no cambia con posición, tamaño, giro ni inclinación de una figura plana."""
+    from pt import formas as fm
+    banco = fm.BancoDeFormas()
+    avion = fm.poligono("avion_planta")
+    A, (cx, cy), C = fm.momentos(np.array([(0, 0), (2, 0), (2, 1), (0, 1)]))        # rectángulo de 2 x 1
+    assert abs(A - 2) < 1e-12 and abs(cx - 1) < 1e-12 and abs(cy - 0.5) < 1e-12
+    assert abs(C[0, 0] - 4 / 12) < 1e-12 and abs(C[1, 1] - 1 / 12) < 1e-12 and abs(C[0, 1]) < 1e-12
+    for tam, giro, centro, aplastar in ((40, 0.3, (100, 50), (1, 1)), (300, 2.1, (-20, 900), (1, 1)),
+                                        (120, 4.0, (0, 0), (0.4, 1.0)), (80, 1.0, (5, 5), (1.0, 0.5))):
+        d = fm.descriptor(fm.transformar(avion, tam, giro, centro, aplastar))
+        assert fm.distancia(d, banco.plantillas["avion_planta"]) < 0.02
+    assert fm.distancia(fm.descriptor(avion[::-1]), banco.plantillas["avion_planta"]) < 1e-3   # sentido de recorrido
+    elipse = fm.transformar(fm.poligono("circulo"), 100, 0.7, (0, 0), (1.0, 0.35))
+    assert fm.distancia(fm.descriptor(elipse), banco.plantillas["circulo"]) < 0.01            # toda elipse es un círculo inclinado
+    assert abs(fm.alargamiento(elipse) - 1 / 0.35) < 0.02
+    cuadrado = np.array([(0, 0), (1, 0), (1, 1), (0, 1)], dtype=float)
+    assert fm.distancia(fm.descriptor(cuadrado), banco.plantillas["circulo"]) > 0.10
+    assert fm.distancia(fm.descriptor(cuadrado), banco.plantillas["avion_planta"]) > 0.30
+    assert fm.distancia(banco.plantillas["avion_planta"], banco.plantillas["circulo"]) > 0.40
+    assert banco.mejor(fm.descriptor(fm.transformar(avion, 90, 1.2)), ("avion",))[0] == "avion_planta"
+
+
+def test_banco_de_formas_aprende_y_prefiere_lo_aprendido():
+    """Las vistas aprendidas (formas.json) reemplazan a las genéricas de su familia."""
+    import tempfile
+    from pt import formas as fm
+    ruta = os.path.join(tempfile.mkdtemp(), "formas.json")
+    banco = fm.BancoDeFormas(ruta)
+    assert set(banco.de_la_familia("avion")) == {"avion_planta", "avion_perfil"}
+    d = fm.descriptor(fm.poligono("avion_perfil")) * 1.1
+    banco.guardar("avion_lado", d)
+    otro = fm.BancoDeFormas(ruta)                                    # se vuelve a leer del archivo
+    assert set(otro.de_la_familia("avion")) == {"avion_lado"} and "avion_lado" in otro.aprendidas
+    assert np.allclose(otro.plantillas["avion_lado"], d, atol=1e-5)
+    assert set(otro.de_la_familia("circulo")) == {"circulo"}        # otra familia: sin cambios
+    try:
+        banco.guardar("../fuera", d)
+        assert False
+    except ValueError:
+        pass
+
+
+def test_detector_por_forma_avion_y_circulo():
+    """DetectorForma: encuentra la silueta entre otras figuras, sin usar color, y no inventa detecciones."""
+    from herramientas import evaluar_forma as ev
+    from pt.deteccion import DetectorForma
+    Pp = Parametros()
+    avion, ovni = DetectorForma(Pp.forma_avion), DetectorForma(Pp.forma_ovni)
+    rng = np.random.default_rng(2)
+    aciertos = 0
+    for _ in range(12):                                              # avión entre rectángulos, manchas y una lámpara
+        img, c = ev.escena(rng, objetivo="avion_planta", distraer=True, lampara=True, tam=(70, 120))
+        avion.reiniciar()
+        r = avion.procesar(img, usar_ventana=False)                  # sólo recibe el plano Y
+        if r.valido:
+            assert np.hypot(r.u - c[0], r.w - c[1]) < 3.0 and r.forma.startswith("avion") and r.dist <= Pp.forma_avion.dist_max
+            aciertos += 1
+    assert aciertos >= 11
+    for _ in range(6):                                               # sin avión: no hay detección válida
+        img, _ = ev.escena(rng, objetivo=None, distraer=True, lampara=True)
+        avion.reiniciar()
+        r = avion.procesar(img, usar_ventana=False)
+        assert not r.valido and r.motivo
+    img, c = ev.escena(rng, objetivo="circulo", tam=(50, 80), inclinar=0.5)
+    r = ovni.procesar(img, usar_ventana=False)
+    assert r.valido and r.forma == "circulo" and np.hypot(r.u - c[0], r.w - c[1]) < 2.0
+    avion.reiniciar()
+    r = avion.procesar(img, usar_ventana=False)                      # un disco no es un avión
+    assert not r.valido and "ninguna figura parecida" in r.motivo
+    #* En SEGUIMIENTO trabaja en la ventana alrededor de la detección anterior.
+    img, c = ev.escena(rng, objetivo="avion_planta", tam=(80, 100))
+    avion.reiniciar()
+    r1 = avion.procesar(img, usar_ventana=True)
+    r2 = avion.procesar(img, usar_ventana=True)
+    assert r1.valido and r2.valido and abs(r1.u - r2.u) < 0.5 and abs(r1.w - r2.w) < 0.5
+
+
+def test_fuente_sintetica_con_silueta():
+    """--objeto avion: la fuente dibuja una silueta sin color y su centro de área es la verdad."""
+    from pt.deteccion import DetectorForma, DetectorLaserRojo
+    Pp = Parametros()
+    src = FuenteSintetica(640, 480, 80, 0.2, objeto="avion", fondo=150, oclusiones=(), falsos=())
+    det, rojo = DetectorForma(Pp.forma_avion), DetectorLaserRojo(Pp.deteccion_roja)
+    for c in src:
+        r = det.procesar(c.img, usar_ventana=True, v=c.v)
+        assert r.valido and np.hypot(r.u - c.verdad[0], r.w - c.verdad[1]) < 1.5
+        assert not rojo.procesar(c.img, usar_ventana=False, v=c.v).valido          # no hay nada rojo que detectar
 
 
 if __name__ == "__main__":

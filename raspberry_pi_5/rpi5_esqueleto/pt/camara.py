@@ -48,7 +48,7 @@ class FuenteSintetica:
                  sigma_px=1.6, pico=235, fondo=35, ruido=4.0, jitter_ms=0.8,
                  latencia_ms=12.0, oclusiones=((3.0, 3.5), (6.0, 6.3)),
                  falsos=((4.5, (80, 60)),), tiempo_real=False, pico_v=100, lampara=None,
-                 geometria=None, pose_en=None):
+                 geometria=None, pose_en=None, objeto="punto", tam_objeto_px=80.0):
         self.W, self.H, self.fps, self.dur = ancho, alto, fps, duracion_s
         self.rng = np.random.default_rng(semilla)
         self.sigma, self.pico, self.fondo, self.ruido = sigma_px, pico, fondo, ruido
@@ -62,6 +62,16 @@ class FuenteSintetica:
         #* se interpreta como dirección en el MUNDO (la que tendría con la cámara en 0°, 0°) y el
         #* punto se dibuja donde lo vería la cámara con la pose de la plataforma en ese instante.
         self.geo, self.pose_en = geometria, pose_en
+        #* objeto = "avion" o "circulo": en vez del punto láser se dibuja una SILUETA oscura
+        #* (sin color: el plano V queda neutro), para probar los detectores por forma. Su centro
+        #* de área queda en (u, w); gira lento y se ve inclinada, como un objeto real.
+        self.objeto, self.tam_objeto = objeto, tam_objeto_px
+        self._k_render = 0
+        if objeto != "punto":
+            import cv2
+            from . import formas
+            self._cv2, self._formas = cv2, formas
+            self._pol = formas.poligono("avion_planta" if objeto == "avion" else "circulo")
         self.vv, self.uu = np.mgrid[0:alto, 0:ancho].astype(np.float32)
         self.vv2, self.uu2 = np.mgrid[0:alto // 2, 0:ancho // 2].astype(np.float32)
 
@@ -72,7 +82,16 @@ class FuenteSintetica:
 
     def _render(self, u, w, visible, extra=None):
         img = self.fondo + self.rng.normal(0, self.ruido, (self.H, self.W)).astype(np.float32)
-        for (pu, pw, amp) in ([(u, w, self.pico)] if visible else []) + (extra or []):
+        silueta = self.objeto != "punto"
+        if silueta and visible:
+            self._k_render += 1
+            px = self._formas.transformar(self._pol, self.tam_objeto, 0.004 * self._k_render, (0.0, 0.0), (1.0, 0.8))
+            px += np.array([u, w]) - np.array(self._formas.momentos(px)[1])      # centro de área en (u, w)
+            capa = np.zeros((self.H, self.W), np.uint8)                          # cobertura 0..255, con borde suave
+            self._cv2.fillPoly(capa, [np.round(px * 16).astype(np.int32)], 255, lineType=self._cv2.LINE_AA, shift=4)
+            capa = self._cv2.GaussianBlur(capa, (0, 0), 0.8).astype(np.float32) / 255.0
+            img += capa * (0.3 * self.fondo - self.fondo)                         # el objeto queda al 30 % del fondo
+        for (pu, pw, amp) in ([(u, w, self.pico)] if visible and not silueta else []) + (extra or []):
             m = int(4 * self.sigma) + 1
             x0, x1 = max(0, int(pu) - m), min(self.W, int(pu) + m + 1)
             y0, y1 = max(0, int(pw) - m), min(self.H, int(pw) + m + 1)
@@ -84,7 +103,7 @@ class FuenteSintetica:
     def _render_v(self, u, w, visible):
         """Plano V a media resolución: la muestra j cubre los píxeles 2j y 2j+1 (centro 2j+0,5)."""
         v = 128 + self.rng.normal(0, 1.5, (self.H // 2, self.W // 2)).astype(np.float32)
-        if visible:
+        if visible and self.objeto == "punto":
             pu, pw, s = (u - 0.5) / 2, (w - 0.5) / 2, max(self.sigma / 2, 0.7)
             m = int(4 * s) + 1
             x0, x1 = max(0, int(pu) - m), min(self.W // 2, int(pu) + m + 1)

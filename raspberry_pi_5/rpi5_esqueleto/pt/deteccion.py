@@ -1,12 +1,20 @@
 """
-deteccion.py — Procesamiento de imagen, detectores de LÁSER (PI-2 a PI-6).
+deteccion.py — Procesamiento de imagen (PI-2 a PI-6): detectores de los tres objetivos.
 
-Sólo NumPy, para que corra igual en el PC y en la Raspberry Pi. Dos detectores con la
-misma interfaz `procesar(img, usar_ventana, v=None) -> Resultado`:
+Todos con la misma interfaz `procesar(img, usar_ventana, v=None) -> Resultado`:
 
-  DetectorLaser      por BRILLO, sobre el plano Y (el original del esqueleto)
+  DetectorForma      por FORMA, sobre el plano Y: silueta por contraste local y filtro de
+                     figura con descriptores de Fourier (pt/formas.py). Es el detector del
+                     AVIÓN y del objeto circular (revisión de los ayudantes, 18-11-2026:
+                     "detector de imagen, no de luz"). Requiere OpenCV.
   DetectorLaserRojo  por COLOR, sobre el plano V, con confirmación de brillo en Y
-                     (algoritmo de mi_proyecto_camara/laser_op.py)
+                     (algoritmo de mi_proyecto_camara/laser_op.py). Punto láser.
+  DetectorLuz        por BRILLO con búsqueda por bloques (flash del celular).
+  DetectorLaser      por BRILLO, sobre el plano Y (el original del esqueleto).
+  DetectorAvionRojo  avión por COLOR rojo (plano V). Anterior a la revisión: queda como
+                     respaldo con el nombre "avion_rojo".
+
+Los detectores de punto usan sólo NumPy; el de forma además OpenCV.
 
   PI-2  recorte a la ventana de interés (seguimiento) o cuadro completo
   PI-3  candidato: pico de brillo (Y) o zona más roja por bloques (V)
@@ -14,8 +22,8 @@ misma interfaz `procesar(img, usar_ventana, v=None) -> Resultado`:
   PI-5  centroide subpíxel ponderado alrededor del candidato
   PI-6  validación: área de la mancha y salto máximo respecto del cuadro anterior
 
-Pendiente (fuera de la PoC): detectores de aeronave y de patrón desconocido,
-corrección de distorsión aplicada al punto, múltiples candidatos.
+Pendiente: validar el detector por forma con imágenes reales y aprender las vistas del
+avión; corrección de distorsión aplicada al punto.
 """
 #* Por qué el detector rojo es el de trabajo: un rojo puro tiene Y ≈ 0,30·R ≈ 76, bajo el
 #* umbral de 180 del detector por brillo (salvo que el centro del punto sature), y
@@ -37,6 +45,8 @@ class Resultado:
     confianza: float = 0.0      # [0, 1]
     motivo: str = ""            # por qué se rechazó (diagnóstico PI-8)
     t_proc_ms: float = 0.0
+    forma: str = ""             # detector por forma: plantilla más parecida
+    dist: float = float("nan")  # y su distancia (0 = idéntica; se acepta si <= dist_max)
 
 class DetectorAvionRojo:
     """Detector de un AVIÓN ROJO en el plano V (Cr) de YUV420,
@@ -390,3 +400,208 @@ class DetectorLuz:
         conf = float(np.clip((pico - p.umbral) / max(255 - p.umbral, 1) * 0.5 + 0.5, 0.0, 1.0))
         return Resultado(True, u, w, pico, area, conf)
 
+
+# ===========================================================================
+class DetectorForma:
+    """Detector por FORMA sobre el plano Y: reconoce la silueta del objetivo, no su brillo ni
+    su color. Sirve para el avión (plantillas 'avion_*') y para un objeto circular ('circulo').
+    """
+    #* Requiere OpenCV (ya está en la RPi: lo usan el tablero y los scripts de cámara).
+    #* Pasos, sobre la luminancia (no se usa el plano V ni ningún canal de color):
+    #*   PI-2  ventana alrededor de la detección anterior, o cuadro completo a media resolución;
+    #*   PI-3  segmentación por CONTRASTE LOCAL: realce morfológico (black-hat para objetos más
+    #*         oscuros que su entorno, top-hat para más claros). Mide cuánto se separa cada
+    #*         píxel del fondo que lo rodea, así que no depende del nivel de luz de la escena
+    #*         ni de un degradado de iluminación. Sólo aparecen objetos más angostos que tam_max_px;
+    #*   PI-5  contorno de cada mancha y su centroide de área (subpíxel);
+    #*   PI-6  filtro de figura: descriptores de Fourier del contorno (pt/formas.py) comparados
+    #*         con las plantillas pedidas; además área, alargamiento y salto entre cuadros.
+    #! Condiciones de operación (DET-6): el objetivo debe verse completo, contrastar con el fondo
+    #! que lo rodea y no tocar otra figura de contraste parecido (una mano, un palo grueso).
+    #! Un fondo liso da la silueta más limpia; con fondo recargado suben los rechazos.
+    #? Sin validar con imágenes reales del avión: los valores por defecto salen de escenas
+    #? sintéticas. Aprender las vistas reales con herramientas/aprender_forma.py.
+
+    def __init__(self, p_forma, banco=None):
+        import cv2                                   # perezoso: los demás detectores no lo necesitan
+        from .formas import BancoDeFormas, descriptor, momentos, normalizar_afin
+        self.cv2, self.p = cv2, p_forma
+        self.banco = banco if banco is not None else BancoDeFormas()
+        self._descriptor, self._momentos, self._normalizar = descriptor, momentos, normalizar_afin
+        self._nucleos = {}
+        self.ultimo = None
+        self.diagnostico = []        # candidatos del último cuadro: (u, w, área, plantilla, distancia)
+        #* Para aprender formas (herramientas/aprender_forma.py): si es una lista, cada figura
+        #* medida se agrega como dict con su descriptor y su contorno en píxeles del cuadro.
+        self.detalle = None
+
+    def reiniciar(self):
+        self.ultimo = None
+
+    def procesar(self, img, usar_ventana=True, v=None):
+        """img: plano Y (alto x ancho, uint8). v se ignora. Devuelve Resultado."""
+        t0 = time.perf_counter()
+        r = self._procesar(img, usar_ventana)
+        r.t_proc_ms = (time.perf_counter() - t0) * 1e3
+        if r.valido:
+            self.ultimo = (r.u, r.w)
+        return r
+
+    # ------------------------------------------------------------------
+    def _nucleo(self, k, forma=None):
+        cv2 = self.cv2
+        forma = cv2.MORPH_RECT if forma is None else forma
+        if (k, forma) not in self._nucleos:
+            self._nucleos[(k, forma)] = cv2.getStructuringElement(forma, (k, k))
+        return self._nucleos[(k, forma)]
+
+    def _contraste(self, gris, esc):
+        """Mapas de contraste local (0..255): cuánto se aparta cada píxel de su entorno.
+        Uno por polaridad: objetos más oscuros que el fondo y objetos más claros."""
+        cv2, p = self.cv2, self.p
+        #* El realce morfológico amplifica el ruido de píxel: se suaviza antes. A media
+        #* resolución la reducción ya promedió 2x2, así que basta un suavizado menor.
+        g = cv2.GaussianBlur(gris, (5, 5), 0) if esc == 1 else cv2.blur(gris, (3, 3))
+        nuc = self._nucleo(max(3, int(p.tam_max_px / esc)) | 1)
+        #! Las dos polaridades NO se mezclan en un solo mapa: junto a un objeto oscuro con
+        #! entrantes (entre el ala y la cola), el fondo claro encerrado aparece como "objeto
+        #! claro angosto" y, sumado al avión, le rellena la silueta. Se buscan por separado.
+        mapas = []
+        if p.polaridad in ("oscuro", "ambos"):
+            mapas.append(cv2.morphologyEx(g, cv2.MORPH_BLACKHAT, nuc))
+        if p.polaridad in ("claro", "ambos"):
+            mapas.append(cv2.morphologyEx(g, cv2.MORPH_TOPHAT, nuc))
+        return mapas
+
+    def _candidatos(self, gris, esc, x0, y0):
+        """Figuras de la región `gris` (reducida `esc` veces, con origen (x0, y0) en el cuadro).
+        Devuelve (lista de (distancia, u, w, área, plantilla), contraste máximo, nº de manchas)."""
+        salida, pico, n = [], 0, 0
+        for con in self._contraste(gris, esc):
+            s, pk, nn = self._candidatos_de(con, esc, x0, y0, gris.shape)
+            salida += s
+            pico, n = max(pico, pk), n + nn
+        salida.sort(key=lambda s: s[0])
+        return salida, pico, n
+
+    def _candidatos_de(self, con, esc, x0, y0, forma_gris):
+        cv2, p = self.cv2, self.p
+        pico = int(con.max())
+        if pico < p.contraste_min:
+            return [], pico, 0
+        _, mascara = cv2.threshold(con, p.contraste_min - 1, 255, cv2.THRESH_BINARY)
+        contornos, _ = cv2.findContours(mascara, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        H, W = forma_gris
+        e2 = esc * esc
+        manchas = []
+        for c in contornos:
+            area = cv2.contourArea(c) * e2
+            if not (p.area_min <= area <= p.area_max):
+                continue
+            manchas.append((area, c, cv2.boundingRect(c)))
+        manchas.sort(key=lambda m: -m[0])
+        salida = []
+        for area, c, (bx, by, bw, bh) in manchas[: p.max_candidatos]:
+            #* Borde a media altura: la mancha se encontró con el umbral bajo (contraste_min),
+            #* que la engorda 1 o 2 px por el desenfoque. La figura se mide donde el contraste
+            #* cae a frac_borde de su máximo, que es donde está el borde real del objeto. Sin
+            #* esto, las partes delgadas (alas) quedan gruesas y la figura ya no es la misma.
+            dentro = np.zeros((bh, bw), np.uint8)
+            cv2.drawContours(dentro, [c], -1, 255, -1, offset=(-bx, -by))
+            sub = con[by:by + bh, bx:bx + bw]
+            corte = max(p.contraste_min, p.frac_borde * cv2.minMaxLoc(sub, mask=dentro)[1])
+            figura = np.zeros((bh + 2, bw + 2), np.uint8)
+            figura[1:-1, 1:-1] = cv2.bitwise_and(cv2.threshold(sub, corte - 1, 255, cv2.THRESH_BINARY)[1], dentro)
+            if p.abrir_frac > 0:
+                #* Quitar el palo o hilo que sostiene al avión. La apertura (de tamaño proporcional
+                #* a la figura, para no depender de la distancia) borra todo lo delgado: el palo,
+                #* pero también las puntas de las alas. Por eso después se devuelve lo que quedó a
+                #* menos de k píxeles del cuerpo: las puntas vuelven y del palo sólo queda un muñón.
+                k = int(round(p.abrir_frac * (area / e2) ** 0.5)) | 1
+                if k >= 3:
+                    cuerpo = cv2.morphologyEx(figura, cv2.MORPH_OPEN, self._nucleo(k, cv2.MORPH_ELLIPSE))
+                    figura = cv2.bitwise_and(cv2.dilate(cuerpo, self._nucleo(2 * k + 1, cv2.MORPH_ELLIPSE)), figura)
+            partes, _ = cv2.findContours(figura, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+            if not partes:
+                continue
+            pts = max(partes, key=cv2.contourArea).reshape(-1, 2).astype(np.float64) + (bx - 1, by - 1)
+            if len(pts) < 8:
+                continue
+            #* Cortada por el borde de la región: su figura no es la real. Se revisa DESPUÉS de
+            #* la apertura, para que un palo que llega al borde no descarte al avión.
+            (fx0, fy0), (fx1, fy1) = pts.min(axis=0), pts.max(axis=0)
+            if fx0 <= 0 or fy0 <= 0 or fx1 >= W - 1 or fy1 >= H - 1:
+                continue
+            norm = self._normalizar(pts)
+            if norm is None or norm[1] > p.alargamiento_max:
+                continue
+            d = self._descriptor(norm[0], afin=False)
+            mom = self._momentos(pts)
+            if d is None or mom is None:
+                continue
+            nombre, dist = self.banco.mejor(d, p.formas)
+            if nombre is None:
+                continue
+            #* Coordenadas del cuadro completo: el píxel reducido j cubre esc píxeles reales.
+            u = x0 + mom[1][0] * esc + (esc - 1) / 2.0
+            w = y0 + mom[1][1] * esc + (esc - 1) / 2.0
+            salida.append((dist, u, w, int(mom[0] * e2), nombre))
+            if self.detalle is not None:
+                self.detalle.append({"u": u, "w": w, "area": int(mom[0] * e2), "forma": nombre, "dist": dist,
+                                     "descriptor": d, "alargamiento": norm[1],
+                                     "contorno": np.array([x0, y0]) + pts * esc + (esc - 1) / 2.0})
+        return salida, pico, len(manchas)
+
+    def _en_ventana(self, img, centro):
+        """Candidatos a resolución completa en la ventana centrada en `centro`."""
+        H, W = img.shape
+        m = self.p.ventana_seguimiento // 2
+        uc, wc = int(round(centro[0])), int(round(centro[1]))
+        x0, x1 = max(0, uc - m), min(W, uc + m)
+        y0, y1 = max(0, wc - m), min(H, wc + m)
+        if x1 - x0 < 16 or y1 - y0 < 16:
+            return [], 0, 0
+        return self._candidatos(np.ascontiguousarray(img[y0:y1, x0:x1]), 1, x0, y0)
+
+    def _procesar(self, img, usar_ventana):
+        cv2, p = self.cv2, self.p
+        H, W = img.shape
+        cand, pico, n = [], 0, 0
+        if usar_ventana and self.ultimo is not None:
+            cand, pico, n = self._en_ventana(img, self.ultimo)
+            cand = [c for c in cand if c[0] <= p.dist_max]
+        if not cand:
+            #* Búsqueda en el cuadro completo, reducido: cuesta la cuarta parte. Lo que se
+            #* encuentre se vuelve a medir a resolución completa (centroide más fino).
+            esc = max(1, int(p.reducir_busqueda))
+            chico = cv2.resize(img, (W // esc, H // esc), interpolation=cv2.INTER_AREA) if esc > 1 \
+                else np.ascontiguousarray(img)
+            cand, pico, n = self._candidatos(chico, esc, 0, 0)
+            if esc > 1:
+                #* A media resolución la figura sale más tosca: se da un margen de 1,5 veces
+                #* para decidir qué volver a medir, y el veredicto se toma a resolución completa.
+                for c in [c for c in cand if c[0] <= 1.5 * p.dist_max][:2]:
+                    fino = [f for f in self._en_ventana(img, c[1:3])[0] if f[0] <= p.dist_max]
+                    if fino:
+                        cand = fino
+                        break
+        self.diagnostico = [(c[1], c[2], c[3], c[4], c[0]) for c in cand[:5]]
+        if not cand:
+            if pico < p.contraste_min:
+                return Resultado(False, pico=pico, motivo="sin contraste sobre umbral")
+            return Resultado(False, pico=pico, motivo="sin figuras del tamaño pedido" if n == 0 else "figuras muy alargadas")
+        buenos = [c for c in cand if c[0] <= p.dist_max]
+        if not buenos:
+            dist, u, w, area, nombre = cand[0]
+            return Resultado(False, u, w, pico, area, motivo=f"ninguna figura parecida (mejor: {nombre}, d={dist:.2f})",
+                             forma=nombre, dist=dist)
+        if self.ultimo is not None:
+            cerca = [c for c in buenos if np.hypot(c[1] - self.ultimo[0], c[2] - self.ultimo[1]) <= p.salto_max_px]
+            if not cerca:
+                dist, u, w, area, nombre = buenos[0]
+                salto = float(np.hypot(u - self.ultimo[0], w - self.ultimo[1]))
+                return Resultado(False, u, w, pico, area, motivo=f"salto {salto:.0f} px", forma=nombre, dist=dist)
+            buenos = cerca
+        dist, u, w, area, nombre = buenos[0]
+        conf = float(np.clip(1.0 - dist / max(p.dist_max, 1e-6), 0.0, 1.0)) * 0.5 + 0.5
+        return Resultado(True, u, w, pico, area, conf, forma=nombre, dist=dist)

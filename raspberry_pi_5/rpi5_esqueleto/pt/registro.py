@@ -26,6 +26,8 @@ COLUMNAS = [
     #* Diagnóstico del gating (para ajustar el piso con datos): gating_d = innovación más
     #* alejada de los dos ejes, en veces su umbral (> 1 = rechazo); σ de la innovación por eje.
     "gating_d", "sigma_pan", "sigma_tilt",
+    #* Detector por forma: plantilla más parecida y su distancia (se acepta si <= dist_max).
+    "forma", "forma_dist",
 ]
 
 

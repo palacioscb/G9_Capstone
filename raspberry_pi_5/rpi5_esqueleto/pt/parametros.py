@@ -71,6 +71,33 @@ class DeteccionAvion:
     salto_max_px: float = 80.0
 
 @dataclass
+class DeteccionForma:
+    #* Detector por FORMA (plano Y): silueta por contraste local + descriptores de Fourier.
+    #* Una instancia por objetivo: el avión y el objeto circular (ver Parametros).
+    formas: tuple = ("avion",)    # familias de plantillas aceptadas: 'avion' -> avion_planta, avion_perfil, y las aprendidas avion_*
+    polaridad: str = "oscuro"     # "oscuro": más oscuro que su entorno; "claro": más claro; "ambos"
+    #! "ambos" cuesta el doble y trae falsos: el fondo claro encerrado entre el ala y la cola de
+    #! un avión oscuro es, para el detector, una figura clara más. En escenas sintéticas con
+    #! distractores, alguna figura ajena pasa el umbral en el 2 % de los cuadros con "oscuro" y
+    #! en el 27–49 % con "ambos". Elegir la polaridad que corresponda a la escena de la demostración.
+    contraste_min: int = 25       # diferencia mínima de gris con el entorno [0..255]
+    frac_borde: float = 0.5       # el borde de la figura se toma donde el contraste cae a esta fracción de su máximo
+    tam_max_px: int = 91          # el objetivo debe ser más ANGOSTO que esto (ancho de su parte más gruesa) [px]
+    area_min: int = 150           # área de la figura [px]. Bajo ~150 px la silueta no alcanza para reconocerla
+    area_max: int = 40000
+    dist_max: float = 0.18        # distancia máxima al descriptor de la plantilla (0 = idéntica)
+    alargamiento_max: float = 6.0  # largo/ancho máximo de la figura (descarta palos y bordes)
+    abrir_frac: float = 0.10      # quita lo más delgado que esta fracción de √área (el palo que sostiene al avión); 0 = no
+    max_candidatos: int = 8       # figuras que se comparan por cuadro (las más grandes)
+    reducir_busqueda: int = 2     # la búsqueda en el cuadro completo se hace a 1/2 de resolución
+    ventana_seguimiento: int = 224  # lado de la ventana en SEGUIMIENTO [px]; debe contener al objetivo completo
+    salto_max_px: float = 80.0
+    #? Valores de partida, de escenas sintéticas (herramientas/evaluar_forma.py). dist_max:
+    #? el mismo avión, girado e inclinado, da 0,07 de mediana y 0,13 en el percentil 95 (0,19
+    #? si mide menos de 45 px); rectángulos, manchas y una mano quedan sobre 0,28.
+
+
+@dataclass
 class DeteccionLuz:
     #* Detector de FUENTE DE LUZ (flash del celular), traído de mi_proyecto_camara/luz_2.py:
     #* búsqueda por bloques en el plano Y + centroide ponderado alrededor del mejor bloque.
@@ -200,6 +227,9 @@ PERFILES = {
     "laser": {"detector": "rojo", "exposicion_us": 2000, "ganancia": 1.0},
     "luz": {"detector": "luz", "exposicion_us": 2000, "ganancia": 2.0},
     "avion": {"detector": "avion", "exposicion_us": 6000, "ganancia": 2.0},
+    #? Objeto no identificado: se busca una figura circular (un disco inclinado se ve como
+    #? elipse y también se acepta). Exposición de partida, igual a la del avión.
+    "ovni": {"detector": "ovni", "exposicion_us": 6000, "ganancia": 2.0},
 }
 
 
@@ -216,3 +246,11 @@ class Parametros:
     actuador: Actuador = field(default_factory=Actuador)
     enlace: Enlace = field(default_factory=Enlace)
     deteccion_avion: DeteccionAvion = field(default_factory=DeteccionAvion)
+    #* Detectores por forma (18-11-2026). El círculo es una figura simple: se le exige más
+    #* parecido (0,06) porque muchas manchas suaves se le acercan (0,04–0,12). Con 0,06 un
+    #* disco pasa en el 99 % de las escenas sintéticas, y una mancha ajena en el 3 %.
+    #? Polaridad "ambos" para el objeto no identificado: emite luz, pero no se sabe si se verá
+    #? como disco claro o como cuerpo oscuro con luces. Fijarla cuando se conozca el objeto.
+    forma_avion: DeteccionForma = field(default_factory=DeteccionForma)
+    forma_ovni: DeteccionForma = field(default_factory=lambda: DeteccionForma(
+        formas=("circulo",), polaridad="ambos", dist_max=0.06, alargamiento_max=3.0, abrir_frac=0.0))
