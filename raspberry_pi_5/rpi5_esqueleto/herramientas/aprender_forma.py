@@ -89,6 +89,9 @@ def main():
     ap.add_argument("--familia", choices=["avion", "ovni"], default="avion", help="parámetros de segmentación a usar")
     ap.add_argument("--polaridad", choices=["oscuro", "claro", "ambos"], help="por defecto, la de parametros.py")
     ap.add_argument("--contraste-min", type=int)
+    ap.add_argument("--frac-borde", type=float,
+                    help="dónde se toma el borde (por defecto 0,5). Subirlo a 0,7–0,8 si el objeto está apoyado y su "
+                         "sombra se pega a la silueta: la sombra contrasta menos que el objeto y queda fuera")
     ap.add_argument("--elegir", choices=["centro", "mayor"], default="centro",
                     help="qué figura del cuadro es el objetivo: la más cercana al centro o la más grande")
     ap.add_argument("--roi", metavar="x1,y1,x2,y2,x3,y3,x4,y4",
@@ -124,6 +127,8 @@ def main():
         p.polaridad = a.polaridad
     if a.contraste_min:
         p.contraste_min = a.contraste_min
+    if a.frac_borde:
+        p.frac_borde = a.frac_borde
     det = DetectorForma(p, banco)
 
     descs, ultimo, vistos = [], None, 0
