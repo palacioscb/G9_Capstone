@@ -85,6 +85,8 @@ def argumentos():
     ap.add_argument("--tiempo-real", action="store_true", help="fuente sintética al ritmo real de la cámara")
     ap.add_argument("--lampara", action="store_true", help="fuente sintética: agrega una lámpara blanca fija")
     ap.add_argument("--ventana", action="store_true", help="muestra la imagen (requiere OpenCV y pantalla)")
+    ap.add_argument("--sin-recorte", action="store_true",
+                    help="sin la herramienta de recorte del tablero (pt/recorte.py): ni controles ni código en el lazo, como antes del 18-11")
     ap.add_argument("--registro", default="registros", help="carpeta de salida del CSV")
     #* MON-1 / MON-2: tablero web en la red local, en un hilo aparte (sin monitor HDMI).
     red = ap.add_argument_group("monitoreo por red (MON-1 / MON-2)")
@@ -221,6 +223,18 @@ def lista_de_ajustes(a, P, con_camara):
         Ajuste("feedforward", "Feedforward de velocidad (ω_ff)", "Predicción", "bool", bool(P.lazo.usar_feedforward),
                en_perfil=False, ayuda="Envía al ESP32 la velocidad estimada del objetivo, además de θ_ref."),
     ]
+    if not getattr(a, "sin_recorte", False):
+        #* Recorte de la zona de trabajo (pt/recorte.py). Parte APAGADO; sólo cambia lo que ve el detector.
+        #* No va en los perfiles: depende de dónde está montada la cámara, no del objetivo.
+        from pt.recorte import RecorteROI
+        An, Al = int(P.captura.salida_px[0]), int(P.captura.salida_px[1])
+        ini = RecorteROI(An, Al).coords
+        L += [Ajuste("roi.activo", "Recorte activo", "Recorte de imagen", "bool", False, en_perfil=False,
+                     ayuda="El detector sólo ve lo que está dentro del cuadrilátero; lo de afuera se rellena con el "
+                           "gris del fondo. Desmarcar = como antes. El cuadrilátero se dibuja sobre la imagen (botón «Dibujar recorte»)."),
+              *[Ajuste(f"roi.{e}{i}", f"Esquina {i} ({e})", "Recorte de imagen", "int", ini[f"roi.{e}{i}"],
+                       0, (An if e == "x" else Al) - 1, 1, "px", en_perfil=False)
+                for i in range(1, 5) for e in "xy"]]
     return L
 
 
@@ -283,6 +297,10 @@ class AjustesEnVivo:
             setattr(P.prediccion, clave, bool(valor))    #* prediccion.py lo lee en cada cuadro
         elif clave == "t_acel_max_s":
             P.prediccion.t_acel_max_s = float(valor)
+        elif clave.startswith("roi."):
+            #* Recorte de imagen (pt/recorte.py). Un cuadrilátero inválido lanza ValueError: no se activa,
+            #* aplicar() lo informa y el tablero vuelve a mostrar el valor vigente.
+            self.recorte.fijar(clave, valor)
         else:                                        # "<detector>.<atributo>": umbral de un detector
             nombre_det, atributo = clave.split(".", 1)
             if atributo == "salto_activo":
@@ -464,10 +482,14 @@ def main():
     reg = Registro(a.registro, prefijo=f"{a.fuente}_{a.enlace}")
     vista = Ventana(geo) if a.ventana else None
     vivo = None
+    recorte = None                                  #* recorte de imagen del tablero (None = sin la herramienta)
     if a.monitor and not a.monitor_solo_lectura:
         from pt.ajustes import Ajustes
         aj = Ajustes(lista_de_ajustes(a, P, con_camara=(a.fuente == "camara")), PERFILES, RUTA_PERFILES)
         vivo = AjustesEnVivo(aj, a, P, fuente, detectores, ref, sup)
+        if not a.sin_recorte:
+            from pt.recorte import RecorteROI
+            recorte = vivo.recorte = RecorteROI(*P.captura.salida_px)
     mon = MonitorRed(a, P, geo, enl, reg, ajustes=vivo.aj if vivo else None) if a.monitor else None
     if mon:
         print("Monitor (abrir en el navegador de un equipo en la misma red):")
@@ -493,7 +515,17 @@ def main():
             seguimiento = sup.estado == Estado.SEGUIMIENTO
 
             # --- PI: detección -----------------------------------------------------------------
-            r = det.procesar(c.img, usar_ventana=seguimiento, v=c.v)
+            if recorte is not None and recorte.activo:
+                #* Recorte del tablero: SÓLO la imagen que ve el detector. c.img queda intacta para el
+                #* tablero, el registro y la geometría; (u, w) siguen siendo del cuadro completo.
+                img_det, v_det = recorte.aplicar(c.img, c.v)
+                if not recorte.activo:               # falló dentro del recorte: quedó apagado
+                    print(f"AVISO: recorte de imagen apagado por un error: {recorte.error}")
+                    vivo.aj.confirmar("roi.activo", False, "automático")
+                r = det.procesar(img_det, usar_ventana=seguimiento, v=v_det)
+                r.t_proc_ms += recorte.t_ms
+            else:
+                r = det.procesar(c.img, usar_ventana=seguimiento, v=c.v)
 
             # --- CS-1 + EP: objetivo en el mundo, predicho al instante de aplicación ------------
             #* Instante de la fila donde está el objetivo (persiana rodante): ahí se lee la pose.

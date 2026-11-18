@@ -130,6 +130,11 @@ pre { margin: 0; font-size: 12px; white-space: pre-wrap; color: var(--ink-2); ma
     <div class="card">
       <h2>Cámara</h2>
       <div id="img-wrap"><canvas id="img-cv" width="640" height="480"></canvas><div id="img-msg">Esperando imagen…</div></div>
+      <div id="roi-barra" hidden style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+        <button class="btn" id="roi-dibujar" title="Haz clic en 4 esquinas de la zona de trabajo (da igual el orden)">Dibujar recorte</button>
+        <button class="btn" id="roi-quitar" title="El detector vuelve a ver el cuadro completo">Quitar recorte</button>
+        <span class="sub num" id="roi-msg"></span>
+      </div>
       <div class="leg">
         <span><i style="background:var(--muted)"></i>centro de la imagen (referencia de centrado)</span>
         <span><i style="background:var(--s3)"></i>objeto detectado</span>
@@ -382,6 +387,63 @@ function dibujarImagen() {
     if (EST.ref_px) { const [x, y] = EST.ref_px, k = 7 * s; g.strokeStyle = css("--s2");
       g.beginPath(); g.moveTo(x - k, y - k); g.lineTo(x + k, y + k); g.moveTo(x + k, y - k); g.lineTo(x - k, y + k); g.stroke(); }
   }
+  dibujarRecorte(g, cv, s);
+}
+
+// ---- recorte de la zona de trabajo (pt/recorte.py) -------------------------------------------------
+// El navegador sólo PIDE el cuadrilátero (8 coordenadas + «roi.activo», en un solo pedido); la RPi lo valida
+// y el lazo lo aplica. La imagen que se muestra aquí es siempre el cuadro completo.
+let roiDibujando = false, roiPuntos = [];
+function roiVal() { return (EST.aj && EST.aj.val) || (AJ && AJ.val) || {}; }
+function roiCuad(val) {
+  const p = []; for (let i = 1; i <= 4; i++) p.push([val["roi.x" + i], val["roi.y" + i]]);
+  return p.every(q => Number.isFinite(q[0]) && Number.isFinite(q[1])) ? p : null;
+}
+function dibujarRecorte(g, cv, s) {
+  const v = roiVal();
+  if (v["roi.activo"] === undefined) return;
+  const q = roiCuad(v), c = Math.atan2;
+  if (q && v["roi.activo"] && !roiDibujando) {
+    const cx = q.reduce((a, b) => a + b[0], 0) / 4, cy = q.reduce((a, b) => a + b[1], 0) / 4;
+    q.sort((a, b) => c(a[1] - cy, a[0] - cx) - c(b[1] - cy, b[0] - cx));
+    g.save(); g.fillStyle = "rgba(0,0,0,.55)"; g.beginPath();
+    g.rect(0, 0, cv.width, cv.height); g.moveTo(q[0][0], q[0][1]); q.slice(1).forEach(p => g.lineTo(p[0], p[1])); g.closePath();
+    g.fill("evenodd"); g.strokeStyle = "#f1c40f"; g.lineWidth = 2 * s; g.stroke(); g.restore();
+  }
+  if (roiDibujando) {
+    g.save(); g.strokeStyle = "#f1c40f"; g.fillStyle = "#f1c40f"; g.lineWidth = 2 * s; g.beginPath();
+    roiPuntos.forEach((p, i) => { i ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]); }); g.stroke();
+    roiPuntos.forEach(p => { g.beginPath(); g.arc(p[0], p[1], 4 * s, 0, 7); g.fill(); }); g.restore();
+  }
+}
+function roiEstado() {
+  const v = roiVal(), m = $("roi-msg");
+  if (roiDibujando) m.textContent = `Haz clic en las esquinas (${roiPuntos.length}/4)`;
+  else if (v["roi.activo"]) m.textContent = "Recorte ACTIVO: el detector ignora lo de afuera.";
+  else m.textContent = "Recorte apagado: el detector ve todo el cuadro.";
+  $("roi-dibujar").textContent = roiDibujando ? "Cancelar" : "Dibujar recorte";
+}
+function roiEnviar(pts, activo) {
+  const val = {};
+  pts.forEach((p, i) => { val["roi.x" + (i + 1)] = Math.round(p[0]); val["roi.y" + (i + 1)] = Math.round(p[1]); });
+  val["roi.activo"] = activo;                                  // al final: es lo que arma (y valida) el cuadrilátero
+  ajEnviar({valores: val});
+}
+function armarRecorte() {
+  if (!AJ_EL["roi.activo"]) return;                            // sin ajustes del recorte (--sin-recorte): no aparece
+  $("roi-barra").hidden = false;
+  const cv = $("img-cv");
+  $("roi-dibujar").addEventListener("click", () => { roiDibujando = !roiDibujando; roiPuntos = []; roiEstado(); dibujarImagen(); });
+  $("roi-quitar").addEventListener("click", () => { roiDibujando = false; roiPuntos = []; ajEnviar({valores: {"roi.activo": false}}); roiEstado(); });
+  cv.addEventListener("click", ev => {
+    if (!roiDibujando) return;
+    const r = cv.getBoundingClientRect();
+    roiPuntos.push([(ev.clientX - r.left) * cv.width / r.width, (ev.clientY - r.top) * cv.height / r.height]);   // píxeles del cuadro (el canvas tiene su tamaño)
+    if (roiPuntos.length === 4) { const pts = roiPuntos; roiDibujando = false; roiPuntos = []; roiEnviar(pts, true); }
+    roiEstado(); dibujarImagen();
+  });
+  cv.style.cursor = "crosshair";
+  setInterval(roiEstado, 500); roiEstado();
 }
 
 // ---- tarjetas -----------------------------------------------------------------------------------
@@ -475,6 +537,7 @@ function armarAjustes(d) {
   $("aj-card").hidden = false;
   const grupos = {};
   for (const a of d.ajustes) {
+    if (/^roi\.[xy][1-4]$/.test(a.clave)) continue;           // las esquinas se eligen dibujando, no con números
     if (!grupos[a.grupo]) {
       const g = document.createElement("div"); g.className = "aj-g";
       const h = document.createElement("h3"); h.textContent = a.grupo; g.appendChild(h);
@@ -518,6 +581,7 @@ function armarAjustes(d) {
     ajEnviar({guardar: n});
   });
   sincronizarAjustes(d);
+  armarRecorte();
 }
 function sincronizarAjustes(s) {
   if (!AJ || !AJ.habilitado || !s || !s.val) return;
