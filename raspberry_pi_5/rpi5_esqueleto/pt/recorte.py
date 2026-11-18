@@ -64,6 +64,23 @@ def mascara(pts, forma, escala=1):
     return np.logical_and.reduce([c >= 0 for c in cs]) | np.logical_and.reduce([c <= 0 for c in cs])
 
 
+def desde_texto(texto, ancho, alto):
+    """RecorteROI ACTIVO a partir de "x1,y1,x2,y2,x3,y3,x4,y4" (el texto que muestra el tablero junto a la imagen).
+    Para las herramientas de línea de comandos (--roi). ValueError si no son 8 números o el cuadrilátero no vale."""
+    try:
+        n = [int(round(float(x))) for x in str(texto).replace(";", ",").split(",") if x.strip()]
+    except ValueError:
+        raise ValueError("--roi espera 8 números: x1,y1,x2,y2,x3,y3,x4,y4") from None
+    if len(n) != 8:
+        raise ValueError("--roi espera 8 números: x1,y1,x2,y2,x3,y3,x4,y4")
+    r = RecorteROI(ancho, alto)
+    for i in range(4):
+        r.fijar(f"roi.x{i + 1}", n[2 * i])
+        r.fijar(f"roi.y{i + 1}", n[2 * i + 1])
+    r.fijar("roi.activo", True)
+    return r
+
+
 class RecorteROI:
     #* Cuadrilátero inicial (margen del 10 %): sirve si se activa sin dibujar uno.
     def __init__(self, ancho, alto):

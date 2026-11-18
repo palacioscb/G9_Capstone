@@ -1,0 +1,23 @@
+{
+  "laser": {
+    "exposicion_us": 8000,
+    "ganancia": 2.0,
+    "color_rojo": 0.5,
+    "color_azul": 1.5,
+    "detector": "rojo",
+    "rojo.v_umbral": 150,
+    "rojo.y_min": 60,
+    "lam": 0.8,
+    "sigma_min_deg": 0.1
+  },
+  "luz": {
+    "detector": "luz",
+    "exposicion_us": 2000,
+    "ganancia": 2.0
+  },
+  "avion": {
+    "detector": "avion",
+    "exposicion_us": 6000,
+    "ganancia": 2.0
+  }
+}

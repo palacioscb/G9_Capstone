@@ -35,6 +35,7 @@ sys.path.insert(0, RAIZ)
 from pt import formas as fm                                       # noqa: E402
 from pt.deteccion import DetectorForma                            # noqa: E402
 from pt.parametros import Parametros                              # noqa: E402
+from pt.recorte import desde_texto                                # noqa: E402
 
 EXT = (".png", ".jpg", ".jpeg", ".bmp")
 
@@ -123,6 +124,8 @@ def main():
     ap.add_argument("--familia", choices=["avion", "ovni"], default="avion")
     ap.add_argument("--set", dest="cambios", action="append", default=[], metavar="CLAVE=VALOR")
     ap.add_argument("--barrer", metavar="CLAVE=V1,V2,...", help="repite la prueba con cada valor")
+    ap.add_argument("--roi", metavar="x1,y1,x2,y2,x3,y3,x4,y4",
+                    help="zona de trabajo: igual que el recorte del tablero (lo de afuera no se ve); el tablero muestra este texto")
     ap.add_argument("--secuencia", action="store_true", help="tratar los cuadros de cada carpeta como una secuencia (ventana y salto)")
     ap.add_argument("--formas", default=os.path.join(RAIZ, "formas.json"), help="plantillas aprendidas (por defecto formas.json)")
     ap.add_argument("--salida", default=os.path.join(RAIZ, "registros", "reproduccion"))
@@ -132,6 +135,13 @@ def main():
     cuadros = cargar(a.rutas)
     if not cuadros:
         sys.exit("No se encontraron cuadros.")
+    if a.roi:
+        try:
+            roi = desde_texto(a.roi, cuadros[0][2].shape[1], cuadros[0][2].shape[0])
+        except ValueError as ex:
+            sys.exit(f"--roi: {ex}")
+        cuadros = [(e, n, roi.aplicar(img, None)[0]) for e, n, img in cuadros]      # los PNG anotados muestran lo que VE el detector
+        print(f"Recorte aplicado: {a.roi}")
     banco = fm.BancoDeFormas(a.formas)
     p = parametros(a.familia, a.cambios)
     print(f"{len(cuadros)} cuadros en {len({c[0] for c in cuadros})} etiquetas | plantillas de '{a.familia}': "

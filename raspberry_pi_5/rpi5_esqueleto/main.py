@@ -194,6 +194,18 @@ def lista_de_ajustes(a, P, con_camara):
                    detector=nombre, ayuda="El objetivo debe ser más angosto que esto en su parte más gruesa."),
             Ajuste(f"{nombre}.area_min", "Área mínima", "Detector", "int", pf.area_min, 30, 5000, 10, "px",
                    detector=nombre),
+            Ajuste(f"{nombre}.alargamiento_max", "Alargamiento máximo (largo/ancho)", "Detector", "float", float(pf.alargamiento_max),
+                   2.0, 20.0, 0.5, detector=nombre,
+                   ayuda="Se descartan las figuras más alargadas que esto (motivo «figuras muy alargadas»). De lejos las alas se pierden y el "
+                         "avión queda como un palo largo: subirlo. Muy alto deja pasar palos y bordes."),
+            Ajuste(f"{nombre}.frac_borde", "Dónde se toma el borde", "Detector", "float", float(pf.frac_borde), 0.2, 0.9, 0.05,
+                   detector=nombre,
+                   ayuda="El borde se toma donde el contraste cae a esta fracción de su máximo. Más bajo: las partes delgadas o desenfocadas "
+                         "(alas de lejos) se conservan y la figura sale más gruesa. Más alto: más fina."),
+            Ajuste(f"{nombre}.abrir_frac", "Quitar lo delgado (palo)", "Detector", "float", float(pf.abrir_frac), 0.0, 0.30, 0.01,
+                   detector=nombre,
+                   ayuda="Borra lo más delgado que esta fracción de √área (el palo que sostiene al avión). 0 = no borra nada. "
+                         "Muy alto se come las alas."),
         )],
         *[Ajuste(f"{nombre}.salto_activo", "Rechazar saltos entre cuadros", "Detector", "bool", True,
                  detector=nombre,
