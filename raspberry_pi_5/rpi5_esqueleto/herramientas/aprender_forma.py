@@ -42,6 +42,7 @@ sys.path.insert(0, RAIZ)
 from pt import formas as fm                                       # noqa: E402
 from pt.deteccion import DetectorForma                            # noqa: E402
 from pt.parametros import Parametros                              # noqa: E402
+from pt.recorte import desde_texto                                # noqa: E402
 
 RUTA_FORMAS = os.path.join(RAIZ, "formas.json")
 
@@ -90,6 +91,8 @@ def main():
     ap.add_argument("--contraste-min", type=int)
     ap.add_argument("--elegir", choices=["centro", "mayor"], default="centro",
                     help="qué figura del cuadro es el objetivo: la más cercana al centro o la más grande")
+    ap.add_argument("--roi", metavar="x1,y1,x2,y2,x3,y3,x4,y4",
+                    help="zona de trabajo (la del recorte del tablero): lo de afuera no se mide; evita que marcos o travesaños se tomen por el objetivo")
     ap.add_argument("--listar", action="store_true")
     ap.add_argument("--borrar", metavar="NOMBRE")
     a = ap.parse_args()
@@ -124,8 +127,14 @@ def main():
     det = DetectorForma(p, banco)
 
     descs, ultimo, vistos = [], None, 0
+    try:
+        roi = desde_texto(a.roi, *P.captura.salida_px) if a.roi else None
+    except ValueError as ex:
+        sys.exit(f"--roi: {ex}")
     for y in (cuadros_de_camara(P, a.cuadros) if a.camara else cuadros_de_imagenes(a.imagen)):
         vistos += 1
+        if roi is not None:
+            y = roi.aplicar(np.ascontiguousarray(y), None)[0]
         det.detalle = []
         for con in det._contraste(np.ascontiguousarray(y), 1):       # a resolución completa
             det._candidatos_de(con, 1, 0, 0, y.shape)

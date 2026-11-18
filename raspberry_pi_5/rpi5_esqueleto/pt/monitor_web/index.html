@@ -419,7 +419,10 @@ function dibujarRecorte(g, cv, s) {
 function roiEstado() {
   const v = roiVal(), m = $("roi-msg");
   if (roiDibujando) m.textContent = `Haz clic en las esquinas (${roiPuntos.length}/4)`;
-  else if (v["roi.activo"]) m.textContent = "Recorte ACTIVO: el detector ignora lo de afuera.";
+  else if (v["roi.activo"]) {
+    const n = []; for (let i = 1; i <= 4; i++) n.push(v["roi.x" + i], v["roi.y" + i]);
+    m.textContent = `Recorte ACTIVO: el detector ignora lo de afuera. Para las herramientas: --roi "${n.join(",")}"`;
+  }
   else m.textContent = "Recorte apagado: el detector ve todo el cuadro.";
   $("roi-dibujar").textContent = roiDibujando ? "Cancelar" : "Dibujar recorte";
 }
