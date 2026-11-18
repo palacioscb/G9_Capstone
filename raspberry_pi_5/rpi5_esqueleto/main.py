@@ -42,6 +42,9 @@ from pt.registro import Registro
 
 #* Objetivos que se pueden elegir (opción --detector y tablero).
 DETECTORES = ("rojo", "luz", "avion", "ovni", "avion_rojo", "brillo")
+#* Con la protección de salto desactivada (ajuste "<detector>.salto_activo" del tablero), salto_max_px vale esto:
+#* un valor finito y enorme, no inf, para que la configuración siga siendo JSON válido.
+SALTO_DESACTIVADO = 1e9
 
 
 def crear_detectores(P, ruta_formas=None):
@@ -190,6 +193,11 @@ def lista_de_ajustes(a, P, con_camara):
             Ajuste(f"{nombre}.area_min", "Área mínima", "Detector", "int", pf.area_min, 30, 5000, 10, "px",
                    detector=nombre),
         )],
+        *[Ajuste(f"{nombre}.salto_activo", "Rechazar saltos entre cuadros", "Detector", "bool", True,
+                 detector=nombre,
+                 ayuda="Activa: se descarta una detección que cae a más de salto_max_px (80 px) de la anterior. "
+                       "Desactivarla para probar y ajustar sin esa protección. El estimador (gating) sigue activo.")
+          for nombre in DETECTORES],
         Ajuste("avion_rojo.v_umbral", "Umbral de rojo (plano V)", "Detector", "int", P.deteccion_avion.v_umbral, 129, 255, 1,
                detector="avion_rojo", ayuda="128 = neutro, 255 = rojo puro."),
         Ajuste("avion_rojo.min_pix", "Píxeles mínimos (plano V)", "Detector", "int", P.deteccion_avion.min_pix, 1, 500, 1, "px",
@@ -277,7 +285,15 @@ class AjustesEnVivo:
             P.prediccion.t_acel_max_s = float(valor)
         else:                                        # "<detector>.<atributo>": umbral de un detector
             nombre_det, atributo = clave.split(".", 1)
-            setattr(self.params_det[nombre_det], atributo, valor)
+            if atributo == "salto_activo":
+                #* No es un campo de los parámetros: se conmuta salto_max_px entre su valor original y
+                #* SALTO_DESACTIVADO. Los detectores lo leen en cada cuadro, así que no hay que reiniciarlos.
+                pd = self.params_det[nombre_det]
+                if not hasattr(pd, "salto_max_px_orig"):
+                    pd.salto_max_px_orig = pd.salto_max_px
+                pd.salto_max_px = pd.salto_max_px_orig if valor else SALTO_DESACTIVADO
+            else:
+                setattr(self.params_det[nombre_det], atributo, valor)
         return det
 
 
