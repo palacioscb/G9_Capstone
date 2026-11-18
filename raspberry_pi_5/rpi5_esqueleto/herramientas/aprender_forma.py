@@ -3,7 +3,7 @@
 aprender_forma.py — enseña al detector por forma una VISTA del objetivo real.
 
 El detector (pt/deteccion.py, DetectorForma) compara la silueta que ve con plantillas. Las
-incorporadas ("avion_planta", "avion_perfil") son dibujos genéricos: con otro modelo de avión
+incorporadas ("avion_planta") son dibujos genéricos: con otro modelo de avión
 no sirven. Este programa mide la silueta del objetivo verdadero y la guarda en formas.json,
 junto a main.py. Desde ese momento, las plantillas aprendidas de una familia ("avion_*")
 reemplazan a las genéricas.
@@ -51,7 +51,7 @@ def cuadros_de_imagenes(patrones):
         for ruta in sorted(glob.glob(patron)) or [patron]:
             if ruta.endswith(".npz"):                      # p. ej. cuadros.npz de medir_avion.py
                 with np.load(ruta) as z:
-                    for clave in z.files:
+                    for clave in (["y"] if "y" in z.files else z.files):   # medir_avion.py guarda y (luminancia) y v
                         arr = z[clave]
                         if arr.dtype == np.uint8 and arr.ndim in (2, 3) and arr.shape[-1] >= 320:
                             for y in (arr if arr.ndim == 3 else [arr]):
@@ -127,8 +127,8 @@ def main():
     for y in (cuadros_de_camara(P, a.cuadros) if a.camara else cuadros_de_imagenes(a.imagen)):
         vistos += 1
         det.detalle = []
-        for con in det._contraste(np.ascontiguousarray(y), 1):       # a resolución completa
-            det._candidatos_de(con, 1, 0, 0, y.shape)
+        for con, g, signo in det._contraste(np.ascontiguousarray(y), 1):       # a resolución completa
+            det._candidatos_de(con, 1, 0, 0, y.shape, g, signo)
         if not det.detalle:
             continue
         H, W = y.shape

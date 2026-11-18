@@ -40,9 +40,12 @@ AVION_OTRO = fm._espejo([(0.0, 1.0), (0.10, 0.92), (0.12, 0.45), (1.0, 0.40), (1
                          (0.09, -0.62), (0.42, -0.70), (0.42, -0.90), (0.06, -0.88), (0.0, -1.0)])
 
 
-def fondo(rng, claro):
+def fondo(rng, claro, real=False):
     base = rng.uniform(140, 190) if claro else rng.uniform(35, 70)
     gx, gy = rng.uniform(-25, 25, 2)
+    if real:                                             # como la grabación del 18-11: fondo de 64 a 99
+        base, ang = 81.0, rng.uniform(0, 2 * np.pi)
+        gx, gy = 35 * np.cos(ang), 35 * np.sin(ang)
     yy, xx = np.mgrid[0:H * S, 0:W * S].astype(np.float32)
     return base + gx * (xx / (W * S) - 0.5) + gy * (yy / (H * S) - 0.5)
 
@@ -77,9 +80,10 @@ def distractores(img, rng, claro, lampara, evitar):
         poner(img, fm.transformar(fm.poligono("circulo"), rng.uniform(30, 70), centro=c), 250)
 
 
-def escena(rng, objetivo, claro=True, distraer=False, lampara=False, palo=False, tam=(45, 120), inclinar=0.5):
-    """Devuelve (imagen uint8, centro verdadero o None)."""
-    img = fondo(rng, claro)
+def escena(rng, objetivo, claro=True, distraer=False, lampara=False, palo=False, tam=(45, 120), inclinar=0.5, real=False):
+    """Devuelve (imagen uint8, centro verdadero o None). real=True copia los niveles medidos en
+    la grabación del avión del 18-11: fondo 81 con degradado de 64 a 99, avión en 50, ruido 2,4."""
+    img = fondo(rng, claro, real)
     centro = None
     if objetivo is not None:
         pol = AVION_OTRO if objetivo == "avion_otro" else fm.poligono(objetivo)
@@ -88,6 +92,8 @@ def escena(rng, objetivo, claro=True, distraer=False, lampara=False, palo=False,
         c0 = (rng.uniform(90, W - 90), rng.uniform(90, H - 90))
         px = fm.transformar(pol, t, rng.uniform(0, 2 * np.pi), c0, ap)
         nivel = rng.uniform(25, 70) if claro else rng.uniform(170, 230)
+        if real:
+            nivel = rng.uniform(46, 54)
         centro = np.array(fm.momentos(px)[1])
         if palo:                                         # palo delgado desde el avión hasta fuera del cuadro
             a = rng.uniform(0, 2 * np.pi)
@@ -98,7 +104,7 @@ def escena(rng, objetivo, claro=True, distraer=False, lampara=False, palo=False,
     if distraer or lampara:
         distractores(img, rng, claro, lampara, centro)
     img = cv2.resize(img, (W, H), interpolation=cv2.INTER_AREA)
-    img = cv2.GaussianBlur(img, (0, 0), 0.8) + rng.normal(0, 3.0, (H, W)).astype(np.float32)
+    img = cv2.GaussianBlur(img, (0, 0), 0.8) + rng.normal(0, 2.4 if real else 3.0, (H, W)).astype(np.float32)
     return np.clip(img, 0, 255).astype(np.uint8), centro
 
 
@@ -106,9 +112,10 @@ CASOS = [
     # (nombre, detector, argumentos de escena)
     ("avión de planta, fondo liso claro", "avion", dict(objetivo="avion_planta")),
     ("avión claro sobre fondo oscuro (polaridad claro)", "avion_claro", dict(objetivo="avion_planta", claro=False)),
-    ("avión de perfil, fondo liso", "avion", dict(objetivo="avion_perfil")),
     ("avión de planta chico (25–45 px)", "avion", dict(objetivo="avion_planta", tam=(25, 45))),
     ("avión de planta con distractores", "avion", dict(objetivo="avion_planta", distraer=True, lampara=True)),
+    ("avión, niveles de la grabación real (50 sobre 64–99)", "avion", dict(objetivo="avion_planta", real=True)),
+    ("sin avión, niveles de la grabación real", "avion", dict(objetivo=None, real=True)),
     ("avión de planta con palo de 2–4 px", "avion", dict(objetivo="avion_planta", palo=True)),
     ("avión de OTRO modelo (ala recta)", "avion", dict(objetivo="avion_otro")),
     ("sin avión, con distractores", "avion", dict(objetivo=None, distraer=True, lampara=True)),

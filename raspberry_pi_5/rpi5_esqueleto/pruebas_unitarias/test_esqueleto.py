@@ -735,7 +735,7 @@ def test_banco_de_formas_aprende_y_prefiere_lo_aprendido():
     from pt import formas as fm
     ruta = os.path.join(tempfile.mkdtemp(), "formas.json")
     banco = fm.BancoDeFormas(ruta)
-    assert set(banco.de_la_familia("avion")) == {"avion_planta", "avion_perfil"}
+    assert set(banco.de_la_familia("avion")) == {"avion_planta"}     # la genérica de perfil ya no está por defecto
     d = fm.descriptor(fm.poligono("avion_perfil")) * 1.1
     banco.guardar("avion_lado", d)
     otro = fm.BancoDeFormas(ruta)                                    # se vuelve a leer del archivo

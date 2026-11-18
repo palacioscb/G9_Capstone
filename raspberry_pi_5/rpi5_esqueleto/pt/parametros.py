@@ -74,7 +74,7 @@ class DeteccionAvion:
 class DeteccionForma:
     #* Detector por FORMA (plano Y): silueta por contraste local + descriptores de Fourier.
     #* Una instancia por objetivo: el avión y el objeto circular (ver Parametros).
-    formas: tuple = ("avion",)    # familias de plantillas aceptadas: 'avion' -> avion_planta, avion_perfil, y las aprendidas avion_*
+    formas: tuple = ("avion",)    # familias de plantillas aceptadas: 'avion' -> avion_planta y las aprendidas avion_*
     polaridad: str = "oscuro"     # "oscuro": más oscuro que su entorno; "claro": más claro; "ambos"
     #! "ambos" cuesta el doble y trae falsos: el fondo claro encerrado entre el ala y la cola de
     #! un avión oscuro es, para el detector, una figura clara más. En escenas sintéticas con
@@ -251,6 +251,11 @@ class Parametros:
     #* disco pasa en el 99 % de las escenas sintéticas, y una mancha ajena en el 3 %.
     #? Polaridad "ambos" para el objeto no identificado: emite luz, pero no se sabe si se verá
     #? como disco claro o como cuerpo oscuro con luces. Fijarla cuando se conozca el objeto.
-    forma_avion: DeteccionForma = field(default_factory=DeteccionForma)
+    #* contraste_min del avión = 12, medido en la grabación real del 18-11 (8000 µs, ganancia 4):
+    #* el avión queda en 50 de gris sobre un fondo que va de 64 a 99, es decir 14 a 49 de
+    #* contraste según la zona del cuadro. El fondo vacío llega a 17 en algún píxel, pero no forma
+    #* manchas de 150 px con umbral 12 o más (con 10 aparecen 2 en 24 cuadros).
+    #? Si se mejora el contraste (más luz sobre el fondo, fondo más claro), volver a subirlo.
+    forma_avion: DeteccionForma = field(default_factory=lambda: DeteccionForma(contraste_min=12))
     forma_ovni: DeteccionForma = field(default_factory=lambda: DeteccionForma(
         formas=("circulo",), polaridad="ambos", dist_max=0.06, alargamiento_max=3.0, abrir_frac=0.0))

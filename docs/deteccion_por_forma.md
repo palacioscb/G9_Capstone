@@ -67,7 +67,7 @@ Acierto: detección válida a menos de 5 px del objetivo.
 |---|---|---|---|
 | Avión de planta, fondo liso | 98,7 % | 0,0 % | 0,61 px RMS |
 | Avión claro sobre fondo oscuro (polaridad `claro`) | 95,3 % | 0,0 % | 0,64 px RMS |
-| Avión de perfil, fondo liso | 82,0 % | 0,0 % | 0,49 px RMS |
+| Avión con los niveles de la grabación real (50 de gris sobre fondo de 64 a 99) | 98,3 % | 0,0 % | 0,59 px RMS |
 | Avión chico (25 a 45 px) | 57,3 % | 0,0 % | 0,68 px RMS |
 | Avión entre rectángulos, barras, manchas y una lámpara | 98,7 % | 0,0 % | 0,57 px RMS |
 | Avión con un palo de 2 a 4 px pegado | 57,3 % | 0,0 % | 1,44 px RMS |
@@ -102,8 +102,9 @@ Ejemplos: `docs/figuras/deteccion_forma_ejemplos.png`.
   delgado (menos de 2 px en la imagen) o del color del fondo.
 - **Una plantilla por cara.** La inclinación de un objeto plano se compensa; el cambio de
   cara (de arriba a de lado) no. Las vistas muy delgadas (más de 6 a 1) se descartan.
-- **Las plantillas incorporadas son genéricas.** Con otro modelo de avión no sirven: hay que
-  aprender las vistas del avión real (sección 5).
+- **La plantilla incorporada es genérica** (un avión de pasajeros visto desde arriba). Con
+  otro modelo de avión no sirve: hay que aprender las vistas del avión real (sección 5). La
+  genérica de perfil se retiró del banco: ver sección 6.
 - **El detector circular no distingue un disco de una lámpara redonda.** Es el límite de
   decidir sólo por la figura.
 - **Exposición:** la imagen debe mostrar el objeto, no sólo las luces. Punto de partida:
@@ -129,7 +130,44 @@ python3 main.py --fuente camara --detector avion --monitor --duracion 0
   ancho máximo y área mínima. El panel Detección muestra la plantilla elegida y su distancia.
 - El CSV tiene las columnas `forma` y `forma_dist`, y `motivo` dice por qué se rechazó un cuadro.
 
-## 6. Referencias
+## 6. Primera grabación con el avión real (18-11-2026)
+
+`mi_proyecto_camara/medicion_avion/` (90 s, 360 cuadros guardados, 8000 µs, ganancia 4,0).
+
+**No sirve para aprender la silueta: el avión no aparece completo en ningún cuadro.** Se
+grabó muy cerca: ocupa entre 265 y 590 px de los 640 del cuadro y toca el borde en los 317
+cuadros en que se ve. El detector necesita la figura entera.
+
+Lo que sí se pudo medir:
+
+| Medición | Valor |
+|---|---|
+| Nivel de gris del avión | 45 a 57 (es mate y oscuro) |
+| Nivel del fondo vacío | 81 de media, con degradado de 64 a 99 dentro del cuadro |
+| Contraste avión–fondo | 36 a 41 de media; 14 a 49 según la zona |
+| Ruido por píxel | 2,4 niveles de gris |
+| Contraste local del fondo vacío | hasta 17 en algún píxel; ninguna mancha de 150 px con umbral 12 |
+| Saturación | 0 % |
+| Tiempo del detector (PC, cuadros reales) | 1,0 a 1,3 ms de mediana |
+
+Cambios hechos a partir de esos datos:
+
+- **Polaridad `oscuro` confirmada:** el avión es más oscuro que el fondo en todo el cuadro.
+- **`contraste_min` del avión: de 25 a 12.** Con 25, donde el fondo es más oscuro el avión
+  quedaba bajo el umbral. En escenas sintéticas con esos mismos niveles, el acierto sube de
+  43 % a 98 %; en los 24 cuadros reales sin avión no aparece ninguna detección.
+- **Borde a media altura contra el fondo local**, píxel a píxel, en vez de contra el máximo de
+  contraste de la figura: con un degradado de 35 niveles la regla anterior recortaba el avión.
+- **Se retiró la plantilla genérica de perfil.** Aceptó como "avión" trozos sueltos del avión
+  real (punta de ala, nariz) en 44 de los 336 cuadros con avión. Con la de planta sola: 0.
+- **El avión real es de ala delta, con una sonda larga en la nariz.** La plantilla genérica
+  de planta tampoco le corresponde: hay que aprender sus vistas.
+
+Para la próxima grabación: avión completo en cuadro, de 100 a 200 px de largo. Con el campo
+de la cámara (0,1154° por píxel, unos 2,0 mm por píxel a 1 m), un avión de 30 cm mide 150 px
+a 1 m y 100 px a 1,5 m. Usar `herramientas/grabar_cuadros.py`, una etiqueta por cara.
+
+## 7. Referencias
 
 - Zahn, C. T. y Roskies, R. Z. (1972). Fourier descriptors for plane closed curves. *IEEE Trans. Computers*.
 - Persoon, E. y Fu, K. S. (1977). Shape discrimination using Fourier descriptors. *IEEE Trans. SMC*.

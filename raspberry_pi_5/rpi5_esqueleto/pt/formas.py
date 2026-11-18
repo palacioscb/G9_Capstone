@@ -33,6 +33,10 @@ que el módulo de Fourier ya ignora. Con esto toda elipse queda convertida en c�
 #* siluetas distintas, así que el banco guarda una plantilla por vista (planta, perfil...).
 #* El alargamiento que se quita al normalizar no se pierde: se entrega aparte (alargamiento),
 #* para poder descartar figuras demasiado delgadas (un palo, un borde).
+#! La silueta "avion_perfil" NO está en el banco por defecto (18-11): es poco más que una mancha
+#! alargada con una aleta, y en la grabación real del avión aceptó como "avión" trozos sueltos
+#! (la punta de un ala, la nariz) en 44 de 336 cuadros. Con "avion_planta" sola: 0 de 336.
+#! Su polígono se conserva para las escenas sintéticas. La vista de lado hay que APRENDERLA.
 #? Las plantillas "avion_planta" y "avion_perfil" de este archivo son siluetas GENÉRICAS,
 #? dibujadas a mano. Sirven para probar. Con el avión real hay que aprender sus propias
 #? vistas (herramientas/aprender_forma.py), que se guardan en formas.json.
@@ -148,7 +152,7 @@ def poligono(nombre):
     raise KeyError(nombre)
 
 
-INCORPORADAS = ("circulo", "avion_planta", "avion_perfil")
+INCORPORADAS = ("circulo", "avion_planta")
 
 
 class BancoDeFormas:
@@ -167,7 +171,7 @@ class BancoDeFormas:
 
     def de_la_familia(self, familias):
         """Plantillas cuyo nombre es una de `familias` o empieza por ella y '_'
-        ('avion' -> avion_planta, avion_perfil, avion_lado...)."""
+        ('avion' -> avion_planta y las aprendidas avion_arriba, avion_lado...)."""
         fam = (familias,) if isinstance(familias, str) else tuple(familias)
         #* Si hay vistas aprendidas de la familia, mandan ellas: las genéricas sólo se usan
         #* mientras no se haya aprendido ninguna.

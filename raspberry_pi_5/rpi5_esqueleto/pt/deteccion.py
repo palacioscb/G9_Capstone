@@ -457,7 +457,8 @@ class DetectorForma:
 
     def _contraste(self, gris, esc):
         """Mapas de contraste local (0..255): cuánto se aparta cada píxel de su entorno.
-        Uno por polaridad: objetos más oscuros que el fondo y objetos más claros."""
+        Uno por polaridad: objetos más oscuros que el fondo y objetos más claros.
+        Devuelve [(contraste, gris suavizado, signo)], con signo −1 = oscuro y +1 = claro."""
         cv2, p = self.cv2, self.p
         #* El realce morfológico amplifica el ruido de píxel: se suaviza antes. A media
         #* resolución la reducción ya promedió 2x2, así que basta un suavizado menor.
@@ -468,23 +469,23 @@ class DetectorForma:
         #! claro angosto" y, sumado al avión, le rellena la silueta. Se buscan por separado.
         mapas = []
         if p.polaridad in ("oscuro", "ambos"):
-            mapas.append(cv2.morphologyEx(g, cv2.MORPH_BLACKHAT, nuc))
+            mapas.append((cv2.morphologyEx(g, cv2.MORPH_BLACKHAT, nuc), g, -1))
         if p.polaridad in ("claro", "ambos"):
-            mapas.append(cv2.morphologyEx(g, cv2.MORPH_TOPHAT, nuc))
+            mapas.append((cv2.morphologyEx(g, cv2.MORPH_TOPHAT, nuc), g, +1))
         return mapas
 
     def _candidatos(self, gris, esc, x0, y0):
         """Figuras de la región `gris` (reducida `esc` veces, con origen (x0, y0) en el cuadro).
         Devuelve (lista de (distancia, u, w, área, plantilla), contraste máximo, nº de manchas)."""
         salida, pico, n = [], 0, 0
-        for con in self._contraste(gris, esc):
-            s, pk, nn = self._candidatos_de(con, esc, x0, y0, gris.shape)
+        for con, g, signo in self._contraste(gris, esc):
+            s, pk, nn = self._candidatos_de(con, esc, x0, y0, gris.shape, g, signo)
             salida += s
             pico, n = max(pico, pk), n + nn
         salida.sort(key=lambda s: s[0])
         return salida, pico, n
 
-    def _candidatos_de(self, con, esc, x0, y0, forma_gris):
+    def _candidatos_de(self, con, esc, x0, y0, forma_gris, g=None, signo=-1):
         cv2, p = self.cv2, self.p
         pico = int(con.max())
         if pico < p.contraste_min:
@@ -503,15 +504,28 @@ class DetectorForma:
         salida = []
         for area, c, (bx, by, bw, bh) in manchas[: p.max_candidatos]:
             #* Borde a media altura: la mancha se encontró con el umbral bajo (contraste_min),
-            #* que la engorda 1 o 2 px por el desenfoque. La figura se mide donde el contraste
-            #* cae a frac_borde de su máximo, que es donde está el borde real del objeto. Sin
-            #* esto, las partes delgadas (alas) quedan gruesas y la figura ya no es la misma.
+            #* que la engorda 1 o 2 px por el desenfoque. La figura se mide donde el gris está
+            #* a medio camino (frac_borde) entre el nivel del objeto y el del fondo, que es donde
+            #* está el borde real. Sin esto, las alas quedan gruesas y la figura ya no es la misma.
             dentro = np.zeros((bh, bw), np.uint8)
             cv2.drawContours(dentro, [c], -1, 255, -1, offset=(-bx, -by))
             sub = con[by:by + bh, bx:bx + bw]
-            corte = max(p.contraste_min, p.frac_borde * cv2.minMaxLoc(sub, mask=dentro)[1])
+            pico_m = cv2.minMaxLoc(sub, mask=dentro)[1]
+            if g is None:
+                umbral = cv2.threshold(sub, max(p.contraste_min, p.frac_borde * pico_m) - 1, 255, cv2.THRESH_BINARY)[1]
+            else:
+                #* El fondo NO es parejo: en la grabación real del 18-11 iba de 64 a 99 de gris
+                #* dentro del cuadro, con el avión en 50. Medir la "mitad" contra el máximo de
+                #* contraste recortaba el avión donde el fondo era más oscuro. La mitad se toma
+                #* píxel a píxel, contra el fondo LOCAL (el gris más el contraste reconstruye
+                #* el fondo que el realce morfológico estimó en ese punto).
+                gs = g[by:by + bh, bx:bx + bw].astype(np.float32)
+                subf = sub.astype(np.float32)
+                nivel = float(np.median(gs[(sub >= 0.7 * pico_m) & (dentro > 0)]))     # gris típico del objeto
+                altura = (gs + subf - nivel) if signo < 0 else (nivel - gs + subf)     # |fondo local − objeto|
+                umbral = ((subf >= p.frac_borde * altura) * 255).astype(np.uint8)
             figura = np.zeros((bh + 2, bw + 2), np.uint8)
-            figura[1:-1, 1:-1] = cv2.bitwise_and(cv2.threshold(sub, corte - 1, 255, cv2.THRESH_BINARY)[1], dentro)
+            figura[1:-1, 1:-1] = cv2.bitwise_and(umbral, dentro)
             if p.abrir_frac > 0:
                 #* Quitar el palo o hilo que sostiene al avión. La apertura (de tamaño proporcional
                 #* a la figura, para no depender de la distancia) borra todo lo delgado: el palo,
