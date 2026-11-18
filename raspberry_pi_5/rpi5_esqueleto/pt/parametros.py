@@ -121,6 +121,17 @@ class Prediccion:
     max_rechazos: int = 3         # tras N rechazos seguidos se reinicia (maniobra real)
     t_max_s: float = 0.5          # EP-4: tiempo máximo extrapolando antes de declarar no confiable
     tau_conf_s: float = 0.2       # EP-5: constante de decaimiento de la confianza
+    #* Revisión del 17-11-2026 (docs/prediccion_rls.pdf, ajustes 4 a 6). Con los tres primeros
+    #* en False / 0 y gracia_gating = 0, prediccion.py se comporta como antes de la revisión.
+    reinicio_informado: bool = True   # tras los rechazos, el estimador nuevo parte con esas mediciones (sin PÉRDIDA)
+    gating_conjunto: bool = True      # pan y tilt se aceptan o rechazan juntos; la confianza mira los dos ejes
+    t_acel_max_s: float = 0.0         # > 0: pasado ese tiempo sin medición aceptada, se extrapola a velocidad constante
+    #! APAGADO por defecto (0). Medido el 17-11 (orden 3, λ = 0,80, error RMS a 300 ms de oclusión):
+    #!   objetivo sin aceleración, σ = 0,10°:  0,69° sin tope -> 0,46° con tope de 0,04 s
+    #!   objetivo con 30 °/s²:                 0,69° -> 1,10°;   con 80 °/s²: 0,69° -> 2,73°
+    #! Quitar la aceleración sólo conviene con objetivos de velocidad casi constante y detección
+    #! ruidosa. Si se usa, no bajar de 0,04 s (el horizonte normal es de 20–30 ms).
+    gracia_gating: int = 3            # muestras extra (además de `orden`) antes de armar el gating tras arranque o reinicio
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +183,24 @@ class Enlace:
     baudios: int = 921600         #* firmware esp32_pan_tilt (la PoC de texto usaba 115 200)
     periodo_min_s: float = 0.0    # trama binaria: una consigna por cuadro (80 Hz)
     watchdog_s: float = 0.100     # sin telemetría -> enlace caído (MODO_SEGURO)
+
+
+# ---------------------------------------------------------------------------
+# Perfiles por objetivo para el tablero (pt/ajustes.py, --monitor)
+# ---------------------------------------------------------------------------
+#* Un perfil = detector + cámara + umbrales para un objetivo. Se aplica con un clic desde el
+#* tablero, sin volver a ejecutar main.py. Las claves son las de los ajustes (main.py,
+#* lista_de_ajustes); una clave que falte deja ese parámetro como esté.
+#? Valores de PARTIDA, no medidos en la plataforma: salen de los scripts de mi_proyecto_camara
+#? (laser_op.py, luz_op.py: exposición 2000 µs y ganancia 2,0) y de los valores por defecto de
+#? este archivo. El del avión es el de las corridas de lazo cerrado del equipo
+#? (--detector avion --exposicion 6000 --ganancia 2.0). Ajustarlos en el laboratorio desde el
+#? tablero y usar "Guardar perfil": quedan en perfiles.json, que tiene prioridad sobre esta tabla.
+PERFILES = {
+    "laser": {"detector": "rojo", "exposicion_us": 2000, "ganancia": 1.0},
+    "luz": {"detector": "luz", "exposicion_us": 2000, "ganancia": 2.0},
+    "avion": {"detector": "avion", "exposicion_us": 6000, "ganancia": 2.0},
+}
 
 
 @dataclass

@@ -44,6 +44,14 @@ class Supervisor:
         if self.estado == Estado.MODO_SEGURO:
             self._ir(t, Estado.DETENIDO, "reconocimiento del operador")
 
+    def reiniciar_busqueda(self, t, causa):
+        """Vuelve a BÚSQUEDA desde SEGUIMIENTO o PÉRDIDA y exige adquirir de nuevo.
+        Se usa al cambiar de objetivo desde el tablero: lo que se venía siguiendo ya no vale."""
+        self.validos_seguidos = 0
+        self.t_ult_valida = None
+        if self.estado in (Estado.SEGUIMIENTO, Estado.PERDIDA):
+            self._ir(t, Estado.BUSQUEDA, causa)
+
     # ------------------------------------------------------------------
     def paso(self, t, det_valida, confianza, enlace_ok=True, homing_ok=True, falla_actuador=False):
         """Una evaluación. t [s]; det_valida: bool; confianza: EP-5 en [0,1].

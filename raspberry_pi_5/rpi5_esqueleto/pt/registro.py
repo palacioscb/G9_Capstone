@@ -19,6 +19,13 @@ COLUMNAS = [
     "esp32_estado", "esp32_fallas", "esp32_pan_med", "esp32_tilt_med",
     "esp32_pan_ref", "esp32_tilt_ref", "esp32_w_pan", "esp32_w_tilt",
     "u_real", "w_real", "err_centro_px",
+    #* Con el tablero se puede cambiar de objetivo y de cámara en la misma corrida: cada fila
+    #* dice con qué detector y con qué exposición/ganancia REALES (metadatos) se obtuvo.
+    "detector", "exp_us", "ganancia", "lam",
+    "ff",                         # 1 = feedforward de velocidad activo en este cuadro
+    #* Diagnóstico del gating (para ajustar el piso con datos): gating_d = innovación más
+    #* alejada de los dos ejes, en veces su umbral (> 1 = rechazo); σ de la innovación por eje.
+    "gating_d", "sigma_pan", "sigma_tilt",
 ]
 
 

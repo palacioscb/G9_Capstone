@@ -164,6 +164,30 @@ class FuenteCamara:
         # recorte real del sensor (para la geometría)
         md = self.cam.capture_metadata()
         self.info["ScalerCrop"] = md.get("ScalerCrop")
+        self._exp_real_us = int(md.get("ExposureTime") or p_cap.exposicion_us or 0)
+
+    def ajustar(self, exposicion_us=None, ganancia=None, ganancias_color=None):
+        """Cambia controles de la cámara con el lazo corriendo (ajustes del tablero).
+        libcamera los aplica unos pocos cuadros después; lo realmente aplicado vuelve en los
+        metadatos de cada cuadro (Cuadro.meta: ExposureTime, AnalogueGain)."""
+        #* Exposición y ganancia van SIEMPRE juntas y con el AE apagado: si el AE estuviera
+        #* activo (exposicion_us = 0 al partir), pisaría el valor que se manda solo.
+        #? Una exposición mayor que el período de cuadro (12 500 µs a 80 fps) no se puede
+        #? cumplir: libcamera la recorta, porque FrameDurationLimits está fijo.
+        pc, c = self.pc, {}
+        if exposicion_us is not None or ganancia is not None:
+            if exposicion_us is not None:
+                pc.exposicion_us = int(exposicion_us)
+            if ganancia is not None:
+                pc.ganancia = float(ganancia)
+            c.update({"AeEnable": False, "ExposureTime": int(pc.exposicion_us or self._exp_real_us),
+                      "AnalogueGain": float(pc.ganancia)})
+        if ganancias_color is not None:
+            pc.ganancias_color = (float(ganancias_color[0]), float(ganancias_color[1]))
+            c.update({"AwbEnable": False, "ColourGains": pc.ganancias_color})
+        if c:
+            self.cam.set_controls(c)
+        return c
 
     def __iter__(self):
         t_fin = None if self.dur is None else time.monotonic() + self.dur
@@ -181,7 +205,9 @@ class FuenteCamara:
             y = arr[:H, :W]                                                       # plano Y
             v = arr[H + H // 4: H + H // 2].reshape(H // 2, stride // 2)[:, :W // 2]  # plano V
             t_exp = md["SensorTimestamp"] - 1000 * md.get("ExposureTime", 0)
+            self._exp_real_us = int(md.get("ExposureTime") or self._exp_real_us)
             yield Cuadro(y, t_exp, t_ent, k, {"ExposureTime": md.get("ExposureTime"),
+                                             "AnalogueGain": md.get("AnalogueGain"),
                                              "ScalerCrop": md.get("ScalerCrop"),
                                              "SensorTimestamp": md["SensorTimestamp"]}, None, v,
                          exp_ns=1000 * int(md.get("ExposureTime", 0)),

@@ -96,6 +96,22 @@ th { color: var(--muted); font-weight: 600; }
 pre { margin: 0; font-size: 12px; white-space: pre-wrap; color: var(--ink-2); max-height: 170px; overflow: auto; }
 .exp { display: flex; flex-direction: column; gap: 8px; }
 .exp .sub { margin-top: -4px; overflow-wrap: anywhere; }
+/* Ajustes en vivo */
+.aj-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 4px 28px; margin: 6px 0 8px; }
+.aj-g h3 { font-size: 13px; margin: 0 0 8px; font-weight: 650; }
+.aj-row { display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; align-items: center; margin-bottom: 10px; }
+.aj-row[hidden] { display: none; }
+.aj-row label { color: var(--ink-2); font-size: 13px; }
+.aj-row label .u { color: var(--muted); }
+.aj-row input[type=number], .aj-row select, #aj-nombre { background: var(--surface-2); color: var(--ink); border: 1px solid var(--ring);
+  border-radius: 6px; padding: 4px 6px; font: inherit; font-size: 13px; font-variant-numeric: tabular-nums; }
+.aj-row input[type=number] { width: 92px; text-align: right; }
+.aj-row input[type=range] { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--s1); }
+.aj-row input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--s1); }
+.aj-row .ay { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
+.aj-row.pend label::after { content: " · enviando…"; color: var(--warning); }
+#aj-nombre { width: 120px; }
+#aj-hist { max-height: 86px; }
 </style>
 </head>
 <body>
@@ -187,6 +203,22 @@ pre { margin: 0; font-size: 12px; white-space: pre-wrap; color: var(--ink-2); ma
         </div>
       </div>
     </div>
+  </section>
+
+  <section class="card" id="aj-card" hidden>
+    <div class="charts-head">
+      <h2>Ajustes en vivo</h2>
+      <span class="sub">Perfil por objetivo</span>
+      <div class="seg" id="aj-perfiles" role="group" aria-label="Perfil por objetivo"></div>
+      <input id="aj-nombre" type="text" maxlength="24" placeholder="nombre del perfil" aria-label="Nombre del perfil a guardar">
+      <button class="btn" id="aj-guardar" title="Guarda en ese perfil los valores vigentes de cámara, detector, umbrales y λ (perfiles.json en la RPi)">Guardar perfil</button>
+      <span class="sep"></span>
+      <span class="sub num" id="aj-msg">—</span>
+    </div>
+    <div class="aj-grid" id="aj-grupos"></div>
+    <div class="sub num" id="aj-cam"></div>
+    <pre id="aj-hist"></pre>
+    <div class="sub" style="margin-top:6px">Cada cambio se valida en la RPi y el lazo lo aplica en el cuadro siguiente, sin reiniciar main.py. Cambiar de detector vuelve a BÚSQUEDA: la plataforma retiene hasta adquirir el objetivo nuevo. <b>Cualquier equipo conectado a esta red puede cambiar estos valores.</b></div>
   </section>
 
   <section class="card">
@@ -404,8 +436,118 @@ function tarjetas() {
   $("fl").innerHTML = FALLAS.map(([b, n]) => `<div class="flag ${fb & b ? "on" : ""}"><b>${fb & b ? "✕" : "✓"}</b>${n}</div>`).join("")
     + `<div class="flag ${(CFG.enlace !== "nulo" && e.enlace_ok === false && e.modo !== "FINALIZADO") ? "on" : ""}"><b>${(CFG.enlace !== "nulo" && e.enlace_ok === false && e.modo !== "FINALIZADO") ? "✕" : "✓"}</b>Enlace RPi–ESP32</div>`
     + `<div class="flag ${e.modo === "MODO_SEGURO" ? "on" : ""}"><b>${e.modo === "MODO_SEGURO" ? "✕" : "✓"}</b>Modo seguro</div>`;
+  if (e.aj && e.aj.val) {                 // con ajustes en vivo, el detector y el feedforward pueden cambiar
+    $("m-det").textContent = e.aj.val.detector ?? CFG.detector;
+    $("m-ff").textContent = e.aj.val.feedforward ? "sí" : "no";
+  }
   $("bit").innerHTML = (e.bitacora || []).slice().reverse().map(r => `<tr><td class="num">${r[0].toFixed(2)}</td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td></tr>`).join("") || '<tr><td colspan="4">—</td></tr>';
   $("txt").textContent = (e.textos && e.textos.length) ? e.textos.join("\n") : "—";
+}
+
+// ---- ajustes en vivo (POST /ajustes) -------------------------------------------------------------
+// El navegador sólo PIDE: la RPi valida tipo y rango, y el lazo aplica en el cuadro siguiente.
+// Los controles muestran siempre el valor VIGENTE que informa el lazo (EST.aj.val).
+let AJ = null;                           // esquema de /ajustes (una vez)
+const AJ_EL = {};                        // clave -> {a, fila, num, rng, sel, chk}
+const ajPend = {};                       // clave -> {v, t}: enviado, esperando confirmación del lazo
+let ajPerfilesTxt = null, ajNombreTocado = false;
+function ajMsg(t, s) { const m = $("aj-msg"); m.textContent = t; m.style.color = s ? `var(--${s})` : ""; }
+function ajEnviar(cuerpo) {
+  return fetch("/ajustes", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(cuerpo)})
+    .then(r => r.json()).then(j => {
+      const rech = Object.entries(j.rechazados || {});
+      if (j.error) ajMsg("✕ " + j.error, "critical");
+      else if (rech.length) ajMsg("✕ Rechazado: " + rech.map(([k, m]) => `${k} (${m})`).join("; "), "critical");
+      else if ("detalle" in j) ajMsg((j.ok ? "✓ Perfil guardado: " : "✕ ") + j.detalle, j.ok ? "good" : "critical");
+      else ajMsg("Pedido enviado.", "");
+      return j;
+    }).catch(() => ajMsg("✕ Sin respuesta de la RPi", "critical"));
+}
+function ajCambiar(clave, valor) {
+  if (valor === null || Number.isNaN(valor)) return;
+  ajPend[clave] = {v: valor, t: performance.now()};
+  AJ_EL[clave].fila.classList.add("pend");
+  ajEnviar({valores: {[clave]: valor}});
+}
+function armarAjustes(d) {
+  AJ = d;
+  if (!d || !d.habilitado) return;
+  $("aj-card").hidden = false;
+  const grupos = {};
+  for (const a of d.ajustes) {
+    if (!grupos[a.grupo]) {
+      const g = document.createElement("div"); g.className = "aj-g";
+      const h = document.createElement("h3"); h.textContent = a.grupo; g.appendChild(h);
+      $("aj-grupos").appendChild(g); grupos[a.grupo] = g;
+    }
+    const fila = document.createElement("div"); fila.className = "aj-row";
+    const id = "aj-" + a.clave.replace(".", "-"), el = {a, fila};
+    const lab = document.createElement("label"); lab.htmlFor = id; lab.textContent = a.nombre;
+    if (a.unidad) { const u = document.createElement("span"); u.className = "u"; u.textContent = ` [${a.unidad}]`; lab.appendChild(u); }
+    fila.appendChild(lab);
+    if (a.tipo === "bool") {
+      el.chk = document.createElement("input"); el.chk.type = "checkbox"; el.chk.id = id; fila.appendChild(el.chk);
+      el.chk.addEventListener("change", () => ajCambiar(a.clave, el.chk.checked));
+    } else if (a.tipo === "opcion") {
+      el.sel = document.createElement("select"); el.sel.id = id;
+      a.opciones.forEach(o => { const op = document.createElement("option"); op.textContent = String(o); el.sel.appendChild(op); });
+      fila.appendChild(el.sel);
+      el.sel.addEventListener("change", () => ajCambiar(a.clave, a.opciones[el.sel.selectedIndex]));
+    } else {
+      el.num = document.createElement("input"); el.num.type = "number"; el.num.id = id;
+      el.rng = document.createElement("input"); el.rng.type = "range"; el.rng.setAttribute("aria-label", a.nombre);
+      for (const x of [el.num, el.rng]) { x.min = a.min; x.max = a.max; x.step = a.paso; }
+      fila.appendChild(el.num); fila.appendChild(el.rng);
+      const leer = x => { let v = parseFloat(x.value); if (Number.isNaN(v)) return null;
+        v = Math.min(Math.max(v, a.min), a.max); return a.tipo === "int" ? Math.round(v) : +v.toFixed(4); };
+      // El deslizador envía al soltar (no en cada píxel de arrastre); el número, al confirmar.
+      el.rng.addEventListener("input", () => { el.num.value = el.rng.value; });
+      el.rng.addEventListener("change", () => ajCambiar(a.clave, leer(el.rng)));
+      el.num.addEventListener("change", () => { const v = leer(el.num); if (v !== null) { el.num.value = v; el.rng.value = v; } ajCambiar(a.clave, v); });
+    }
+    if (a.ayuda) { const ay = document.createElement("div"); ay.className = "ay"; ay.textContent = a.ayuda; fila.appendChild(ay); }
+    grupos[a.grupo].appendChild(fila);
+    AJ_EL[a.clave] = el;
+  }
+  $("aj-nombre").addEventListener("input", () => { ajNombreTocado = true; });
+  $("aj-guardar").addEventListener("click", () => {
+    const n = $("aj-nombre").value.trim();
+    if (!n) { ajMsg("Escribe el nombre del perfil a guardar.", "warning"); return; }
+    const existe = ((EST.aj || AJ).perfiles || []).includes(n);
+    if (existe && !window.confirm(`¿Reemplazar el perfil «${n}» con los valores vigentes?`)) return;
+    ajEnviar({guardar: n});
+  });
+  sincronizarAjustes(d);
+}
+function sincronizarAjustes(s) {
+  if (!AJ || !AJ.habilitado || !s || !s.val) return;
+  const ahora = performance.now(), det = s.val.detector;
+  for (const clave in AJ_EL) {
+    const el = AJ_EL[clave], v = s.val[clave], p = ajPend[clave];
+    // Pendiente: se espera la confirmación del lazo (o 2 s; si no llega, manda el valor vigente).
+    if (p && (p.v === v || ahora - p.t > 2000)) { delete ajPend[clave]; el.fila.classList.remove("pend"); }
+    el.fila.hidden = !!el.a.detector && el.a.detector !== det;      // sólo los umbrales del detector activo
+    if (ajPend[clave] || v === undefined || v === null) continue;
+    if (el.chk) el.chk.checked = !!v;
+    else if (el.sel) { if (document.activeElement !== el.sel) el.sel.selectedIndex = el.a.opciones.indexOf(v); }
+    else { if (document.activeElement !== el.num) el.num.value = v; if (document.activeElement !== el.rng) el.rng.value = v; }
+  }
+  const lista = s.perfiles || [], txt = lista.join("|") + "#" + s.perfil + "#" + s.perfil_mod;
+  if (txt !== ajPerfilesTxt) {
+    ajPerfilesTxt = txt;
+    const cont = $("aj-perfiles"); cont.textContent = "";
+    for (const n of lista) {
+      const b = document.createElement("button"); b.textContent = n + (n === s.perfil && s.perfil_mod ? " (modificado)" : "");
+      b.setAttribute("aria-pressed", n === s.perfil ? "true" : "false");
+      b.addEventListener("click", () => ajEnviar({perfil: n}));
+      cont.appendChild(b);
+    }
+    if (!ajNombreTocado && s.perfil) $("aj-nombre").value = s.perfil;
+  }
+  $("aj-hist").textContent = (s.hist || []).slice().reverse().map(h => `${h[0]}  ${h[1] || "local"}  ${h[2]}`).join("\n") || "Sin cambios todavía.";
+  const cam = EST.cam;
+  $("aj-cam").textContent = (cam && cam.exp_us != null)
+    ? `La cámara informa: exposición ${cam.exp_us} µs · ganancia ${cam.gan != null ? cam.gan.toFixed(2) : "—"}×` : "";
 }
 
 // ---- datos ---------------------------------------------------------------------------------------
@@ -433,7 +575,7 @@ function bucle() {
     else if (dt < 1000) { $("t-con").textContent = pausado ? "En vivo (gráficos en pausa)" : "En vivo"; pill("p-con", "good"); }
     else { $("t-con").textContent = `Sin datos hace ${(dt / 1000).toFixed(0)} s`; pill("p-con", "warning"); }
   }
-  if (sucio && D) { sucio = false; for (const c of CHARTS) dibujar(c); tarjetas(); dibujarImagen(); }
+  if (sucio && D) { sucio = false; for (const c of CHARTS) dibujar(c); tarjetas(); dibujarImagen(); sincronizarAjustes(EST.aj); }
   requestAnimationFrame(bucle);
 }
 
@@ -448,6 +590,7 @@ fetch("/config").then(r => r.json()).then(cfg => {
   if (!CFG.imagen_hz) $("img-msg").textContent = "Imagen desactivada (--monitor-imagen-hz 0, o falta OpenCV en la RPi).";
   else setInterval(pedirImagen, 1000 / CFG.imagen_hz);
   armarGraficos(); conectar(); requestAnimationFrame(bucle);
+  if (CFG.ajustable) fetch("/ajustes").then(r => r.json()).then(armarAjustes).catch(() => {});
 });
 $("win").addEventListener("click", ev => {
   const b = ev.target.closest("button"); if (!b) return;

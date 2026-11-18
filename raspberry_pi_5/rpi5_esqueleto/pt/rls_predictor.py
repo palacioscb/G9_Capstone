@@ -6,16 +6,21 @@ Modelo local por eje de imagen:
     y(t0 + s) = th[0] + th[1]*s + th[2]*s^2
 
 El origen t0 se traslada a la última muestra en cada paso, de modo que el
-regresor siempre se evalúa con s del orden del período de cuadro (~16,7 ms).
-Sin esa traslación, s crece sin límite y s^2 destruye el condicionamiento.
+regresor siempre se evalúa con s del orden del período de cuadro (12,5 ms a
+80 cuadros/s). Sin esa traslación, s crece sin límite y s^2 destruye el
+condicionamiento.
 """
+#* El programa nunca usa los valores por defecto de esta clase: prediccion.py la crea con el
+#* orden y el λ de parametros.Prediccion (o los que se ajusten en vivo desde el tablero).
 
 from math import comb
 import numpy as np
 
 
 class PredictorRLS:
-    def __init__(self, n=3, lam=0.95, delta=1e4, traza_max=1e6):
+    #? λ por defecto 0,80, igual que parametros.Prediccion (revisión del 17-11-2026). Antes era
+    #? 0,95, que a 80 cuadros/s predice peor que usar la última medición (docs/prediccion_rls.pdf).
+    def __init__(self, n=3, lam=0.80, delta=1e4, traza_max=1e6):
         self.n = n                    # nº de parámetros (2 = pos+vel, 3 = +acel)
         self.lam = lam                # factor de olvido
         self.traza_max = traza_max    # tope anti-windup de covarianza

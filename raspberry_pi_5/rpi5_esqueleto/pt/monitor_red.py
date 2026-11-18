@@ -10,15 +10,26 @@ de cualquier equipo en la misma red, sin monitor HDMI:  http://g9-cap.local:8000
                     cuadro, ~80 Hz) y el estado lento. El navegador ve la dinámica completa.
   /estado           último estado lento (JSON; útil con curl)
   /imagen.jpg       último cuadro en escala de grises (sólo si alguien lo pide)
+  /ajustes          GET: parámetros ajustables en caliente (esquema, valores y perfiles)
+                    POST (JSON): {"valores": {clave: valor}} | {"perfil": nombre} | {"guardar": nombre}
   /historial.csv    últimos `segundos` de filas por cuadro (variables rápidas, MON-2)
   /telemetria.csv   telemetría del ESP32 a 200 Hz (θ_med, θ_ref, ω_cmd, estado, fallas)
   /registro.csv     el CSV completo de la corrida en curso (pt/registro.py)
 
 Sólo depende de la biblioteca estándar. La imagen usa OpenCV (o Pillow) si están instalados.
 """
-#! El tablero es de SOLO LECTURA: no hay ninguna ruta que mande comandos al ESP32 ni cambie
-#! parámetros. Mover motores desde un navegador de la red sería un riesgo (cualquiera conectado
-#! al mismo hotspot podría hacerlo). La parada sigue siendo Ctrl+C en la RPi o 'x' en la consola.
+#! El tablero PUEDE CAMBIAR PARÁMETROS en caliente (decisión del equipo tras la revisión del
+#! 17-11-2026): exposición, ganancia, detector/objetivo, umbrales y predictor, para no volver a
+#! ejecutar main.py al cambiar de objetivo en la demostración. Antes era de sólo lectura.
+#! RIESGO ASUMIDO: cualquiera conectado al mismo hotspot puede cambiarlos, y con los motores
+#! habilitados un cambio de objetivo o de umbral termina moviendo la plataforma.
+#! Lo que acota ese riesgo:
+#!   - sólo se aceptan las claves declaradas en pt/ajustes.py, con tipo y rango validados;
+#!   - sigue sin haber ruta para habilitar motores, mandar referencias o comandos al ESP32;
+#!   - el POST exige Content-Type application/json y un cuerpo corto, así una página web
+#!     cualquiera abierta en un equipo de la red no puede dispararlo;
+#!   - main.py --monitor-solo-lectura vuelve al tablero sin escritura.
+#! La parada sigue siendo Ctrl+C en la RPi o 'x' en la consola.
 #! Escucha en 0.0.0.0 (toda la red local). Nunca abrir el puerto hacia internet.
 import collections
 import io
@@ -31,6 +42,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 CARPETA_WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitor_web")
+CUERPO_MAX = 4096              # bytes de un POST de ajustes (un pedido real ocupa < 300)
 
 #* Variables rápidas, una fila por cuadro. El orden es el del CSV y el del arreglo que recibe
 #* el navegador. Ángulos en grados, píxeles en px, ω en °/s.
@@ -125,13 +137,14 @@ class ServidorMonitor:
     #* hilos del servidor. Si el navegador se atrasa, se pierden refrescos de vista, nunca cuadros
     #* del lazo ni filas del registro.
     def __init__(self, puerto=8000, host="0.0.0.0", hz=20.0, imagen_hz=5.0, segundos=120.0,
-                 fps=80.0, config=None, archivos=None, telemetria=None, max_clientes=5):
+                 fps=80.0, config=None, archivos=None, telemetria=None, max_clientes=5, ajustes=None):
         self.puerto, self.host = int(puerto), host
         self.periodo = 1.0 / max(float(hz), 1.0)
         self.imagen_hz = float(imagen_hz)
         self.config = dict(config or {})
         self.archivos = dict(archivos or {})       # nombre -> función que entrega la ruta
         self.telemetria = telemetria               # deque de tuplas COLUMNAS_TELEMETRIA (o None)
+        self.ajustes = ajustes                     # pt.ajustes.Ajustes, o None = sólo lectura
         self.max_clientes = max_clientes
         self.filas = collections.deque(maxlen=int(segundos * fps))
         self.seq = 0                               # número de la última fila publicada
@@ -184,7 +197,7 @@ class ServidorMonitor:
         c.update(columnas=[{"nombre": n, "unidad": u, "desc": d} for (n, u, d) in COLUMNAS_MONITOR],
                  hz=1.0 / self.periodo, imagen_hz=self.imagen_hz if self.cod.disponible else 0,
                  segundos=self.filas.maxlen / max(self.config.get("fps", 80.0), 1.0),
-                 telemetria=self.telemetria is not None)
+                 telemetria=self.telemetria is not None, ajustable=self.ajustes is not None)
         return limpiar(c)
 
     def iniciar(self):
@@ -206,8 +219,8 @@ class ServidorMonitor:
                 self.end_headers()
                 self.wfile.write(cuerpo)
 
-            def _json(self, obj):
-                self._enviar(200, "application/json; charset=utf-8",
+            def _json(self, obj, codigo=200):
+                self._enviar(codigo, "application/json; charset=utf-8",
                              json.dumps(obj, separators=(",", ":"), allow_nan=False).encode())
 
             def _csv(self, nombre, filas, cabecera):
@@ -229,6 +242,9 @@ class ServidorMonitor:
                         self._json(servidor.config_json())
                     elif ruta == "/estado":
                         self._json(limpiar(servidor.estado))
+                    elif ruta == "/ajustes":
+                        aj = servidor.ajustes
+                        self._json(limpiar(aj.descripcion()) if aj else {"habilitado": False})
                     elif ruta == "/flujo":
                         self._flujo()
                     elif ruta == "/imagen.jpg":
@@ -258,6 +274,46 @@ class ServidorMonitor:
                                          {"Content-Disposition": f'attachment; filename="{os.path.basename(r)}"'})
                     else:
                         self._enviar(404, "text/plain; charset=utf-8", b"No encontrado.")
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+            def do_POST(self):
+                #! Única ruta de escritura. Aquí sólo se valida y se encola: el cambio lo aplica el
+                #! lazo (main.py) al comienzo del cuadro siguiente.
+                ruta = self.path.split("?", 1)[0]
+                try:
+                    aj = servidor.ajustes
+                    if ruta != "/ajustes":
+                        return self._json({"ok": False, "error": "ruta desconocida"}, 404)
+                    if aj is None:
+                        return self._json({"ok": False, "error": "tablero en modo sólo lectura"}, 403)
+                    if "application/json" not in (self.headers.get("Content-Type") or "").lower():
+                        return self._json({"ok": False, "error": "Content-Type debe ser application/json"}, 415)
+                    try:
+                        n = int(self.headers.get("Content-Length") or 0)
+                    except ValueError:
+                        n = 0
+                    if not 0 < n <= CUERPO_MAX:
+                        return self._json({"ok": False, "error": "cuerpo vacío o demasiado largo"}, 413)
+                    try:
+                        pedido = json.loads(self.rfile.read(n).decode("utf-8"))
+                    except (ValueError, UnicodeDecodeError):
+                        pedido = None
+                    if not isinstance(pedido, dict):
+                        return self._json({"ok": False, "error": "JSON inválido"}, 400)
+                    origen = self.client_address[0]
+                    if "guardar" in pedido:
+                        ok, detalle = aj.guardar_perfil(pedido["guardar"], origen)
+                        print(f"Monitor: {origen} guarda el perfil {pedido['guardar']!r}: {detalle}")
+                        return self._json({"ok": ok, "detalle": detalle}, 200 if ok else 400)
+                    if "perfil" in pedido:
+                        aceptados, rechazados = aj.pedir_perfil(pedido["perfil"], origen)
+                    else:
+                        aceptados, rechazados = aj.pedir(pedido.get("valores"), origen)
+                    if aceptados or rechazados:
+                        print(f"Monitor: {origen} pide {aceptados}" + (f" | rechazado: {rechazados}" if rechazados else ""))
+                    self._json({"ok": bool(aceptados) and not rechazados, "aceptados": aceptados,
+                                "rechazados": rechazados}, 200 if aceptados else 400)
                 except (BrokenPipeError, ConnectionResetError):
                     pass
 

@@ -16,17 +16,21 @@ El mismo código corre en el PC con una cámara simulada y un ESP32 simulado, en
 | `pt/camara.py` | PI-1 | `FuenteCamara`: planos Y y V, balance de blancos fijo. `FuenteSintetica`: láser rojo, lámpara blanca opcional y escena que responde a la pose simulada |
 | `pt/deteccion.py` | PI-2 a PI-6 | `DetectorLaserRojo` (plano V con confirmación en Y, traído de `laser_op.py`) y `DetectorLaser` (brillo, el original) |
 | `pt/geometria.py` | CS-1 | Píxel → ángulo, y **dirección del objetivo en el mundo** con la pose actual (composición exacta de rotaciones) |
-| `pt/prediccion.py` | EP-1 a EP-5 | Gating, RLS del equipo (`pt/rls_predictor.py`, sin cambios), predicción y velocidad al instante de aplicación |
+| `pt/prediccion.py` | EP-1 a EP-5 | Gating conjunto de pan y tilt, reinicio informado (sin pasar por PÉRDIDA), RLS del equipo (`pt/rls_predictor.py`, sin cambios), predicción y velocidad al instante de aplicación |
 | `pt/control.py` | CS-2 | `ReferenciaVisual`: θ_ref y ω_ff a partir de la estimación; retención fuera de SEGUIMIENTO |
 | `pt/enlace.py` | CS-3 | `EnlaceTrama` (ESP32 real, telemetría en un hilo), `EnlaceSimulado` (planta de pid_t_2 y el mismo PI) y `EnlaceNulo` |
 | `pt/modelo_eje.py` | Modelo | Planta de pid_t_2, réplica exacta del PI del firmware, polos, Routh, métricas y ajuste de ζ |
 | `pt/supervisor.py` | SE-2 / SE-3 | BÚSQUEDA ⇄ SEGUIMIENTO ⇄ PÉRDIDA; MODO_SEGURO por enlace caído o falla del ESP32; HOMING por AS5600 |
 | `pt/registro.py` | MR-2 / CTL-7 | CSV por cuadro: pose, objetivo, consigna, telemetría y error de centrado |
-| `pt/monitor_red.py` | MON-1 / MON-2 | Servidor web del tablero en un hilo aparte (sólo lectura): flujo en vivo y exportación CSV |
+| `pt/monitor_red.py` | MON-1 / MON-2 | Servidor web del tablero en un hilo aparte: flujo en vivo, exportación CSV y `POST /ajustes` (ajustes en vivo) |
+| `pt/ajustes.py` | MON-1 | Parámetros que el tablero puede cambiar en caliente: validación de tipo y rango, cola hacia el lazo y perfiles por objetivo |
 | `pt/monitor_web/index.html` | MON-1 | Tablero: imagen, detección, objeto, error, ángulos, referencia, ω_cmd, límites, fallas y modo |
 | `main.py` | — | Une todo. `Ventana` (HDMI) y `MonitorRed` (red local) |
 | `herramientas/respuesta_escalon.py` | CTL-7 | Escalón real contra el modelo de pid_t_2; estima ζ (es decir, b) |
-| `pruebas_unitarias/` | — | 26 pruebas sin hardware |
+| `herramientas/analizar_registro.py` | CTL-7 | Presupuesto medido de una corrida (latencias, detección, error de centrado, atraso) y comparación por tramos |
+| `herramientas/comparar_ganancias_ff.py` | CTL-7 | Tabla y figuras: con y sin feedforward para cada grupo de ganancias del PI, simulado y medido |
+| `herramientas/fijar_ganancias.py` | CTL-7 | Fija en el ESP32 las ganancias de un grupo (comando `k` de la consola), con `main.py` detenido |
+| `pruebas_unitarias/` | — | 39 pruebas sin hardware |
 
 Los comentarios usan colores: `#!` rojo (seguridad y riesgos), `#*` verde (lo importante), `#?` azul (supuestos por verificar), `#todo` naranjo (pendientes).
 
@@ -46,7 +50,7 @@ Se usa θ_med en el **instante de exposición** porque entre la foto y la llegad
 
 ```bash
 pip install numpy pyserial matplotlib
-python pruebas_unitarias/test_esqueleto.py                 # 26 × OK
+python pruebas_unitarias/test_esqueleto.py                 # 33 × OK
 python main.py                                             # visión sola, cámara fija
 python main.py --enlace simulado --lampara                 # lazo cerrado simulado, PI puro
 python main.py --enlace simulado --lampara --feedforward   # ídem con ω_ff
@@ -110,9 +114,64 @@ python3 main.py --fuente camara --enlace trama --duracion 0 --monitor
   - `/historial.csv`: últimos 120 s, una fila por cuadro;
   - `/telemetria.csv`: θ_med, θ_ref y ω_cmd del ESP32 a 200 Hz;
   - `/registro.csv`: el CSV completo de la corrida.
-- **Sólo lectura:** desde el navegador no se puede mover nada. Al terminar la corrida, el tablero queda abierto para exportar; se cierra con `Ctrl+C`.
+- **Ajustes en vivo (desde el 17-11-2026):** el tablero ya no es de sólo lectura. Ver la sección 4.
+- Al terminar la corrida, el tablero queda abierto para exportar; se cierra con `Ctrl+C`.
 - **Sin dependencias nuevas:** usa la biblioteca estándar, y OpenCV para la imagen. Opciones en `python3 main.py --help`, grupo *monitoreo por red*.
 - **Prueba en el PC:** `python main.py --enlace simulado --lampara --monitor --duracion 30`, y abrir `http://localhost:8000`.
+
+## 4. Ajustes en vivo: un solo `main.py` para todos los objetivos
+
+La tarjeta **Ajustes en vivo** del tablero cambia parámetros con el lazo corriendo. Ya no hay que volver a ejecutar `main.py` para pasar del láser a la luz o al avión.
+
+```bash
+# [RPi] una sola ejecución para toda la demostración
+python3 main.py --fuente camara --enlace trama --habilitar --duracion 0 --monitor
+# [PC o celular] http://g9-cap.local:8000  ->  tarjeta "Ajustes en vivo"
+```
+
+| Grupo | Qué se puede cambiar | Efecto en el lazo |
+|---|---|---|
+| Cámara | exposición, ganancia analógica, ganancias de color (rojo, azul) | `set_controls` de Picamera2; la cámara lo toma unos cuadros después. El tablero muestra lo que la cámara informa |
+| Objetivo | detector: `rojo`, `luz`, `avion`, `brillo` | detector y estimador parten de cero y el supervisor vuelve a BÚSQUEDA; la plataforma **retiene** hasta adquirir el objetivo nuevo |
+| Detector | umbrales del detector activo | inmediato, sin interrumpir el seguimiento |
+| Predicción | λ (0,60 a 0,99), piso del gating, orden del RLS, feedforward ω_ff | λ, gating y ω_ff sin interrupción; cambiar el orden reinicia el estimador |
+
+- **Perfiles por objetivo** (`laser`, `luz`, `avion`): un clic aplica detector, cámara, umbrales y λ juntos.
+  - Los valores iniciales están en `PERFILES` de `pt/parametros.py`. Son valores de partida, no medidos en la plataforma.
+  - **Guardar perfil** escribe los valores vigentes en `perfiles.json` (junto a `main.py`), que tiene prioridad en las corridas siguientes. Conviene subirlo al repositorio una vez ajustado.
+- **Cómo viaja un cambio:** el navegador hace `POST /ajustes`; el servidor valida clave, tipo y rango (`pt/ajustes.py`) y lo encola; el lazo lo aplica al comienzo del cuadro siguiente y lo confirma. El tablero muestra siempre el valor vigente.
+- **Registro:** el CSV tiene las columnas `detector`, `exp_us`, `ganancia`, `lam` y `ff` (feedforward activo), así que una corrida con varios objetivos se puede separar después.
+- **Análisis:** `herramientas/analizar_registro.py` parte cada CSV en tramos con el mismo detector y feedforward, analiza cada uno y entrega una tabla comparativa.
+
+**Comparar con y sin feedforward, eligiendo el objetivo desde el tablero:**
+
+```bash
+# 1. sin feedforward: ejecutar, elegir el perfil (p. ej. "avion") en el tablero, mover el objetivo, Ctrl+C
+python3 main.py --fuente camara --enlace trama --habilitar --monitor --duracion 0 --registro registros/sin_ff
+# 2. con feedforward: igual, repitiendo el mismo movimiento
+python3 main.py --fuente camara --enlace trama --habilitar --monitor --duracion 0 --feedforward --registro registros/con_ff
+# 3. comparación: sólo los tramos con el detector elegido
+python3 herramientas/analizar_registro.py --detector avion registros/sin_ff/*.csv registros/con_ff/*.csv
+```
+
+También sirve una sola corrida, marcando la casilla de feedforward a mitad de camino: el paso 3 es el mismo, con ese único CSV.
+
+**Comparar grupos de ganancias, con y sin feedforward** (`herramientas/comparar_ganancias_ff.py`). Grupo A: arranque de `config.h` (pan 3 / 2,25; tilt 10 / 25). Grupo B: `pid_t_2.pdf` §8 (pan 5 / 6,25; tilt 20 / 100).
+
+```bash
+# Simulación (PC, ~1,5 min): cuatro corridas de main.py --enlace simulado --ganancias-sim ...
+python3 herramientas/comparar_ganancias_ff.py
+# Después del laboratorio: agrega las filas "medido" (una carpeta de registros por grupo)
+python3 herramientas/comparar_ganancias_ff.py --reusar --detector avion --lab-a registros/lab_A/*.csv --lab-b registros/lab_B/*.csv
+```
+
+Deja en `docs/figuras/` la tabla (`comp_ganancias_ff.csv` y `.md`) y las figuras (`comp_ganancias_ff_barras`, `comp_ganancias_ff_traza_sim` y `_traza_lab`, en PNG y PDF). En el ESP32 real las ganancias se cambian con `python3 herramientas/fijar_ganancias.py B` (manda `k pan 5 6.25` y `k tilt 20 100` por el UART del enlace, con `main.py` detenido; no quedan guardadas tras un reinicio). `--ganancias-sim` sólo afecta al lazo simulado.
+- **Predictor (revisión del 17-11):** el tablero tiene tres controles más en el grupo Predicción: "Reinicio sin pasar por PÉRDIDA", "Gating conjunto (pan y tilt)" y "Oclusión: tope de la aceleración" (apagado, valor 0). Apagar los dos primeros deja el predictor como antes. El CSV agrega `gating_d` (innovación en veces el umbral; mayor que 1 es rechazo), `sigma_pan` y `sigma_tilt`, y `est_u` / `est_w` pueden valer `reinicio`. `analizar_registro.py` los resume en su punto 5, para ajustar el piso del gating con datos. Detalle y mediciones: `docs/prediccion_rls.pdf`, sección 6.1.
+- **Riesgo asumido:** cualquier equipo conectado a la misma red puede cambiar estos valores, y con `--habilitar` un cambio de objetivo o de umbral termina moviendo la plataforma.
+  - No existe ruta para habilitar motores, mandar referencias o comandos al ESP32, ni para cambiar límites o ganancias del PI.
+  - `--monitor-solo-lectura` deja el tablero como antes.
+  - Si el objetivo nuevo no está en cuadro, la plataforma se queda quieta: el patrón de búsqueda sigue pendiente.
+- **Prueba en el PC:** `python main.py --enlace simulado --lampara --monitor --duracion 60`. Con fuente sintética no aparece el grupo Cámara.
 
 ## Resultados en simulación (PC)
 

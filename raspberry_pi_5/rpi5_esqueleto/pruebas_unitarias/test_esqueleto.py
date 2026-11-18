@@ -387,6 +387,323 @@ def test_monitor_red_sirve_y_exporta():
         srv.detener()
 
 
+def _ajustes_de_prueba(ruta=None):
+    from pt.ajustes import Ajuste, Ajustes
+    lista = [Ajuste("exposicion_us", "Exposición", "Cámara", "int", 2000, 100, 12500, 100, "µs"),
+             Ajuste("ganancia", "Ganancia", "Cámara", "float", 1.0, 1.0, 10.0, 0.1),
+             Ajuste("detector", "Detector", "Objetivo", "opcion", "rojo", opciones=("rojo", "luz", "avion")),
+             Ajuste("luz.umbral", "Umbral", "Detector", "int", 220, 1, 255, 1, detector="luz"),
+             Ajuste("rojo.v_umbral", "Umbral V", "Detector", "int", 150, 129, 255, 1, detector="rojo"),
+             Ajuste("feedforward", "FF", "Predicción", "bool", False, en_perfil=False)]
+    return Ajustes(lista, {"luz": {"detector": "luz", "exposicion_us": 3000, "clave_de_otra_corrida": 1}}, ruta)
+
+
+def test_ajustes_validan_tipo_rango_y_clave():
+    """Lo que no está declarado, o está fuera de rango, no llega al lazo."""
+    aj = _ajustes_de_prueba()
+    ok, mal = aj.pedir({"exposicion_us": 4000.0, "ganancia": 99, "detector": "radar", "feedforward": 1,
+                        "habilitar": True, "luz.umbral": 200.5, "rojo.v_umbral": float("nan")})
+    assert ok == {"exposicion_us": 4000} and isinstance(ok["exposicion_us"], int)
+    assert set(mal) == {"ganancia", "detector", "feedforward", "habilitar", "luz.umbral", "rojo.v_umbral"}
+    assert aj.pedir([1, 2])[0] == {} and aj.pedir(None)[0] == {}
+    assert aj.valores["exposicion_us"] == 2000              # pedir no aplica: sólo encola
+    assert aj.pendientes() == [("exposicion_us", 4000, "")] and aj.pendientes() == []
+    aj.confirmar("exposicion_us", 4000)
+    assert aj.valores["exposicion_us"] == 4000 and aj.estado()["v"] == 1
+
+
+def test_ajustes_perfiles_aplicar_y_guardar():
+    import json
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        ruta = os.path.join(d, "perfiles.json")
+        aj = _ajustes_de_prueba(ruta)
+        ok, mal = aj.pedir_perfil("luz", "prueba")
+        assert ok == {"detector": "luz", "exposicion_us": 3000} and mal == {}   # la clave ajena se omite
+        pend = aj.pendientes()
+        assert [p[0] for p in pend] == ["detector", "exposicion_us", "_perfil"]  # el detector va primero
+        for clave, valor, origen in pend:
+            aj.confirmar(clave, valor, origen)
+        assert aj.perfil_activo == "luz" and not aj.perfil_modificado
+        aj.confirmar("luz.umbral", 180)
+        assert aj.perfil_modificado
+        assert aj.pedir_perfil("no_existe")[1]
+        assert not aj.guardar_perfil("../etc")[0]            # el nombre no puede ser una ruta
+        assert aj.guardar_perfil("flash")[0]
+        guardado = json.load(open(ruta, encoding="utf-8"))["flash"]
+        #* Se guarda lo común y lo del detector activo; no el umbral de otro detector ni lo global.
+        assert guardado == {"exposicion_us": 3000, "ganancia": 1.0, "detector": "luz", "luz.umbral": 180}
+        assert "flash" in _ajustes_de_prueba(ruta).perfiles  # otra corrida lo vuelve a cargar
+        aj.guardar_perfil("luz")                             # regrabar conserva las claves que esta corrida no maneja
+        assert aj.perfiles["luz"]["clave_de_otra_corrida"] == 1 and aj.perfiles["luz"]["luz.umbral"] == 180
+
+
+def test_monitor_red_post_de_ajustes():
+    """Ruta de escritura del tablero: valida, encola y nunca aplica por su cuenta."""
+    import json
+    import socket
+    import urllib.error
+    import urllib.request
+    from pt.monitor_red import ServidorMonitor
+
+    def pedir(base, cuerpo, tipo="application/json"):
+        datos = cuerpo if isinstance(cuerpo, bytes) else json.dumps(cuerpo).encode()
+        req = urllib.request.Request(base + "/ajustes", data=datos, headers={"Content-Type": tipo}, method="POST")
+        try:
+            r = urllib.request.urlopen(req, timeout=2)
+            return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    servidores = []
+    try:
+        bases = []
+        for aj in (_ajustes_de_prueba(), None):
+            with socket.socket() as s:
+                s.bind(("127.0.0.1", 0))
+                puerto = s.getsockname()[1]
+            srv = ServidorMonitor(puerto=puerto, host="127.0.0.1", imagen_hz=0, config={"fps": 80.0}, ajustes=aj)
+            srv.iniciar()
+            servidores.append(srv)
+            bases.append(f"http://127.0.0.1:{puerto}")
+        base, base_ro = bases
+        aj = servidores[0].ajustes
+        d = json.loads(urllib.request.urlopen(base + "/ajustes", timeout=2).read())
+        assert d["habilitado"] and d["val"]["detector"] == "rojo" and d["perfiles"] == ["luz"]
+        assert json.loads(urllib.request.urlopen(base + "/config", timeout=2).read())["ajustable"] is True
+        assert pedir(base, {"valores": {"exposicion_us": 5000}}) == (200, {"ok": True, "aceptados": {"exposicion_us": 5000}, "rechazados": {}})
+        assert aj.pendientes() == [("exposicion_us", 5000, "127.0.0.1")]
+        codigo, r = pedir(base, {"valores": {"exposicion_us": 999999, "habilitar": True}})
+        assert codigo == 400 and not r["ok"] and set(r["rechazados"]) == {"exposicion_us", "habilitar"}
+        assert pedir(base, {"valores": {"exposicion_us": 5000}}, tipo="text/plain")[0] == 415   # formulario de otra página
+        assert pedir(base, b"{no es json")[0] == 400
+        assert pedir(base, {"valores": {"x": "y" * 5000}})[0] == 413
+        assert pedir(base, {"perfil": "luz"})[0] == 200 and len(aj.pendientes()) == 3
+        assert aj.pendientes() == [] and aj.valores["exposicion_us"] == 2000   # nada se aplicó sin el lazo
+        #* Sólo lectura (--monitor-solo-lectura): no hay ajustes y el POST se rechaza.
+        assert json.loads(urllib.request.urlopen(base_ro + "/ajustes", timeout=2).read()) == {"habilitado": False}
+        assert pedir(base_ro, {"valores": {"exposicion_us": 5000}})[0] == 403
+    finally:
+        for srv in servidores:
+            srv.detener()
+
+
+def test_ajustes_en_vivo_cambio_de_objetivo():
+    """El lazo aplica lo pedido: otro detector vuelve a BÚSQUEDA; λ y umbrales cambian sin reiniciar."""
+    import argparse
+    import main as programa
+    from pt.ajustes import Ajustes
+    from pt.control import ReferenciaVisual
+    from pt.deteccion import DetectorLaserRojo, DetectorLuz, DetectorAvionRojo
+
+    class CamaraFalsa:
+        pedidos = []
+
+        def ajustar(self, **kw):
+            self.pedidos.append(kw)
+
+    Pp = Parametros()
+    a = argparse.Namespace(detector="rojo")
+    dets = {"rojo": DetectorLaserRojo(Pp.deteccion_roja), "luz": DetectorLuz(Pp.deteccion_luz),
+            "avion": DetectorAvionRojo(Pp), "brillo": DetectorLaser(Pp.deteccion)}
+    ref = ReferenciaVisual(Pp, Geometria.desde_parametros(Pp))
+    sup = Supervisor(Pp.supervisor)
+    sup.estado = Estado.SEGUIMIENTO
+    cam = CamaraFalsa()
+    aj = Ajustes(programa.lista_de_ajustes(a, Pp, con_camara=True))
+    vivo = programa.AjustesEnVivo(aj, a, Pp, cam, dets, ref, sup)
+    rls_antes = ref.est.eu.rls
+
+    assert aj.pedir({"lam": 0.5})[1]                                         # bajo el piso de λ: rechazado
+    aj.pedir({"lam": 0.9, "rojo.v_umbral": 165, "exposicion_us": 4000, "color_rojo": 2.4, "feedforward": True,
+              "sigma_min_deg": 0.3})
+    det = vivo.aplicar(dets["rojo"], 1.0)
+    assert det is dets["rojo"] and sup.estado == Estado.SEGUIMIENTO          # nada de esto interrumpe el seguimiento
+    assert Pp.prediccion.lam == 0.9 and ref.est.eu.rls is rls_antes and ref.est.eu.rls.lam == 0.9 and ref.est.ew.rls.lam == 0.9
+    assert Pp.deteccion_roja.v_umbral == 165 and Pp.lazo.usar_feedforward is True
+    assert ref.est.eu.sigma_min == 0.3 and ref.est.ew.sigma_min == 0.3
+    assert {"exposicion_us": 4000} in cam.pedidos and {"ganancias_color": (2.4, Pp.captura.ganancias_color[1])} in cam.pedidos
+    assert aj.valores["lam"] == 0.9 and aj.valores["exposicion_us"] == 4000
+
+    aj.pedir({"detector": "avion", "avion.min_pix": 12})
+    det = vivo.aplicar(det, 2.0)
+    assert det is dets["avion"] and a.detector == "avion" and Pp.deteccion_avion.min_pix == 12
+    assert sup.estado == Estado.BUSQUEDA and "cambio de objetivo" in sup.bitacora[-1][3]
+    assert ref.est.eu.rls is not rls_antes and ref.est.eu.rls.lam == 0.9     # estimador nuevo, con el λ vigente
+    assert ref.est.eu.sigma_min == 0.3                                       # y con el piso de gating vigente
+
+    #! Si la cámara rechaza un control, el lazo sigue y el valor anterior queda vigente.
+    def falla(**kw):
+        raise RuntimeError("control rechazado")
+    cam.ajustar = falla
+    aj.pedir({"ganancia": 3.0})
+    assert vivo.aplicar(det, 3.0) is det and aj.valores["ganancia"] == Pp.captura.ganancia
+
+
+def test_registro_se_parte_en_tramos_por_detector_y_feedforward():
+    """Una corrida con cambios desde el tablero se analiza por tramos (herramientas/analizar_registro.py)."""
+    from herramientas.analizar_registro import partir_en_tramos
+    filas = ([{"detector": "rojo", "ff": "0"}] * 5 + [{"detector": "avion", "ff": "0"}] * 7
+             + [{"detector": "avion", "ff": "1"}] * 4)
+    assert partir_en_tramos(filas) == [(0, 5, "rojo", 0), (5, 12, "avion", 0), (12, 16, "avion", 1)]
+    #* Registros anteriores al 17-11 no traen esas columnas: quedan como un solo tramo.
+    assert partir_en_tramos([{"valido": "1"}] * 9) == [(0, 9, "", None)]
+    from pt.registro import COLUMNAS
+    assert {"detector", "exp_us", "ganancia", "lam", "ff"} <= set(COLUMNAS)
+
+
+def test_ganancias_sim_y_comparacion_por_grupos():
+    """--ganancias-sim cambia sólo el PI simulado; el grupo A de la comparación es el de config.h."""
+    from pt.enlace import EnlaceSimulado
+    from herramientas.comparar_ganancias_ff import GRUPOS, mejora
+    ganancias = lambda enl: [(c.kp, c.ki) for c in enl.ctl]
+    assert ganancias(EnlaceSimulado(Parametros())) == [GRUPOS["A"]["pan"], GRUPOS["A"]["tilt"]]
+    b = GRUPOS["B"]
+    enl = EnlaceSimulado(Parametros(), kp=(b["pan"][0], b["tilt"][0]), ki=(b["pan"][1], b["tilt"][1]))
+    assert ganancias(enl) == [(5.0, 6.25), (20.0, 100.0)]
+    import main as programa
+    argv, sys.argv = sys.argv, ["main.py", "--enlace", "simulado", "--ganancias-sim", "5", "6.25", "20", "100"]
+    try:
+        assert programa.argumentos().ganancias_sim == [5.0, 6.25, 20.0, 100.0]
+    finally:
+        sys.argv = argv
+    casos = {("simulado", "A", 0): {"res": {"e_pan": 3.0}}, ("simulado", "A", 1): {"res": {"e_pan": 0.5}}}
+    assert mejora(casos, "simulado", "A", "e_pan") == 6.0
+    assert mejora(casos, "medido", "A", "e_pan") is None          # sin datos de laboratorio todavía
+
+
+def test_fijar_ganancias_confirma_con_la_respuesta_del_firmware():
+    """herramientas/fijar_ganancias.py: manda 'k <eje> <Kp> <Ki>' y exige la confirmación del ESP32."""
+    from herramientas.fijar_ganancias import fijar
+
+    class SerialFalso:
+        def __init__(self, responde):
+            self.responde, self.tx, self.rx = responde, b"", b""
+
+        def reset_input_buffer(self):
+            self.rx = b""
+
+        def write(self, b):
+            self.tx += b
+            if self.responde:                # igual que aviso() en src/main.cpp, comando k
+                _, eje, kp, ki = b.decode().split()
+                self.rx = f"# {eje}: Kp={float(kp):.3f} 1/s  Ki={float(ki):.3f} 1/s^2\r\n".encode()
+
+        def read(self, n):
+            b, self.rx = self.rx, b""
+            return b
+
+    s = SerialFalso(True)
+    assert fijar(s, "pan", 5.0, 6.25, espera=0.02) and s.tx == b"k pan 5 6.25\n"
+    assert not fijar(SerialFalso(False), "tilt", 20.0, 100.0, espera=0.02)     # main.py corriendo: sin respuesta
+
+
+def _seguir(pp, medicion, n=200, piso=0.1):
+    """Estimador2D + Supervisor sobre medicion(k) -> (pan, tilt). Devuelve la lista de (Estimacion, estado)."""
+    from pt.prediccion import Estimador2D
+    est, sup, salida = Estimador2D(pp, sigma_min=piso), Supervisor(Parametros().supervisor), []
+    for k in range(n):
+        t = k / 80.0
+        e = est.actualizar_xy(t, True, *medicion(k), t + 0.02)
+        salida.append((e, sup.paso(t, True, e.confianza)))
+    return est, salida
+
+
+def test_reinicio_informado_no_pasa_por_perdida():
+    """Tras los rechazos, el estimador nuevo parte con esas mediciones: confianza > 0 y sin PÉRDIDA."""
+    salto = lambda k: (15.0 * k / 80 + (3.0 if k >= 100 else 0.0), 5.0 * k / 80)      # salto real de 3° en pan
+    pp = Parametros().prediccion
+    assert pp.reinicio_informado and pp.gating_conjunto
+    est, s = _seguir(pp, salto)
+    estados = [(e.estado_u, e.estado_w) for e, _ in s[100:104]]
+    assert estados == [("rechazada", "rechazada")] * 3 + [("reinicio", "aceptada")]   # pan se reinicia; tilt sigue
+    assert all(e.confianza > 0.5 for e, _ in s[10:]) and all(st != Estado.PERDIDA for _, st in s)
+    assert est.eu.rls.listo() and est.ew.rls.n_valid > 100                             # tilt conserva su historia
+    assert abs(s[110][0].u - (15.0 * (110 / 80 + 0.02) + 3.0)) < 0.05                  # ya sigue la trayectoria nueva
+    assert abs(s[104][0].vu - 15.0) < 1.0                                              # y la velocidad (ω_ff) no se corta
+
+    #* Con los cambios apagados se reproduce lo anterior: estimador desde cero, confianza 0 y PÉRDIDA.
+    pp = Parametros().prediccion
+    pp.reinicio_informado, pp.gating_conjunto, pp.gracia_gating = False, False, 0
+    _, s = _seguir(pp, salto)
+    assert s[103][0].estado_u == "reinicio" and s[103][0].confianza == 0.0
+    assert any(st == Estado.PERDIDA for _, st in s[100:110])
+
+
+def test_gating_conjunto_y_piso():
+    """Decisión única para los dos ejes, sin estrechar el umbral: cada eje conserva k·max(σ, piso)."""
+    pp = Parametros().prediccion
+    k_g, piso = pp.k_gating, 0.1
+    recta = lambda k: (15.0 * k / 80, 5.0 * k / 80)                # sin ruido: σ ≈ 0, manda el piso
+
+    def con_desvio(dp, dt):
+        return lambda k: (recta(k)[0] + (dp if k == 100 else 0.0), recta(k)[1] + (dt if k == 100 else 0.0))
+
+    #* Aberrante sólo en tilt: se rechaza la medición completa, y pan no la incorpora.
+    est, s = _seguir(pp, con_desvio(0.0, 1.1 * k_g * piso), n=101)
+    assert (s[100][0].estado_u, s[100][0].estado_w) == ("rechazada", "rechazada") and s[100][0].d_gating > 1.0
+    assert abs(est.eu.t_ult_valida - 99 / 80) < 1e-9 and 0.5 < s[100][0].confianza < 1.0
+    #* Justo bajo el umbral de un eje, o en diagonal bajo el umbral de cada eje: se acepta (como antes).
+    for dp, dt in ((0.9 * k_g * piso, 0.0), (0.9 * k_g * piso, 0.9 * k_g * piso)):
+        _, s = _seguir(pp, con_desvio(dp, dt), n=101)
+        assert s[100][0].estado_u == "aceptada" and 0.85 < s[100][0].d_gating < 1.0
+    #* El piso se puede cambiar en caliente (tablero): con el doble, el mismo aberrante se acepta.
+    _, s = _seguir(pp, con_desvio(0.0, 1.1 * k_g * piso), n=101, piso=2 * piso)
+    assert s[100][0].estado_w == "aceptada"
+    #* La confianza mira los dos ejes: si tilt no está listo, es 0 aunque pan lo esté.
+    est, s = _seguir(pp, recta, n=50)
+    est.ew.reiniciar()
+    assert est.actualizar_xy(50 / 80, True, *recta(50)).confianza == 0.0
+
+
+def test_oclusion_tope_de_aceleracion():
+    """t_acel_max_s > 0: pasado ese tiempo sin medición se extrapola en línea recta, sin escalón."""
+    from pt.prediccion import EstimadorEje
+    parabola = lambda t: 2.0 + 10.0 * t + 40.0 * t * t             # aceleración de 80 °/s²
+    pp = Parametros().prediccion
+    assert pp.t_acel_max_s == 0.0                                   # apagado por defecto (ver parametros.py)
+
+    def estimador(tope):
+        p = Parametros().prediccion
+        p.t_acel_max_s = tope
+        e = EstimadorEje(p, sigma_min=0.1)
+        for k in range(80):
+            e.actualizar(k / 80.0, parabola(k / 80.0), True)
+        return e, 79 / 80.0
+
+    e, t0 = estimador(0.0)                                          # sin tope: la parábola completa
+    assert abs(e.predecir(t0 + 0.3) - parabola(t0 + 0.3)) < 0.02
+    e, t0 = estimador(0.04)
+    assert abs(e.predecir(t0 + 0.03) - parabola(t0 + 0.03)) < 0.01  # dentro del tope: igual que antes
+    v = e.velocidad(t0 + 0.04)
+    assert abs(v - (10.0 + 80.0 * (t0 + 0.04))) < 0.5 and e.velocidad(t0 + 0.3) == v      # velocidad congelada
+    p = [e.predecir(t0 + s) for s in (0.04, 0.10, 0.20, 0.30)]
+    assert abs((p[1] - p[0]) - v * 0.06) < 1e-9 and abs((p[3] - p[2]) - v * 0.10) < 1e-9  # recta desde el tope
+    assert abs(e.predecir(t0 + 0.04 + 1e-6) - e.predecir(t0 + 0.04 - 1e-6) - v * 2e-6) < 1e-6   # sin escalón de posición
+
+
+def test_ajustes_en_vivo_del_predictor():
+    """El tablero puede apagar cada cambio del 17-11 sin reiniciar main.py."""
+    import argparse
+    import main as programa
+    from pt.ajustes import Ajustes
+    from pt.control import ReferenciaVisual
+    Pp = Parametros()
+    a = argparse.Namespace(detector="rojo")
+    ref = ReferenciaVisual(Pp, Geometria.desde_parametros(Pp))
+    sup = Supervisor(Pp.supervisor)
+    aj = Ajustes(programa.lista_de_ajustes(a, Pp, con_camara=False))
+    vivo = programa.AjustesEnVivo(aj, a, Pp, None, {"rojo": DetectorLaser(Pp.deteccion)}, ref, sup)
+    aceptados, rechazados = aj.pedir({"reinicio_informado": False, "gating_conjunto": False, "t_acel_max_s": 0.05})
+    assert not rechazados
+    vivo.aplicar(None, 1.0)
+    pr = ref.est.pp
+    assert (pr.reinicio_informado, pr.gating_conjunto, pr.t_acel_max_s) == (False, False, 0.05)
+    assert aj.pedir({"t_acel_max_s": 0.5})[1]                       # fuera de rango
+    from pt.registro import COLUMNAS
+    assert {"gating_d", "sigma_pan", "sigma_tilt"} <= set(COLUMNAS)
+
+
 if __name__ == "__main__":
     fallas = 0
     for nombre, f in list(globals().items()):

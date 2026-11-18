@@ -17,19 +17,22 @@ Ejemplos:
   python3 main.py --fuente camara --enlace trama --habilitar --detector luz   # ídem con el flash del celular
   python3 main.py --fuente camara --duracion 0 ...         # sin fin (Ctrl+C o SIGTERM para detener)
   python3 main.py ... --monitor                            # tablero web: http://g9-cap.local:8000
+                                                           # (con ajustes en vivo: cámara, objetivo, predictor)
 """
 #! --habilitar energiza los motores: sólo con el banco armado, la prueba de signos hecha
 #! ('t pan' / 't tilt' en la consola del ESP32) y alguien a cargo del corte.
 import argparse
 import collections
 import math
+import os
 import signal
 import statistics as st
+import sys
 import time
 
 import numpy as np
 
-from pt.parametros import Parametros
+from pt.parametros import Parametros, PERFILES
 from pt.geometria import Geometria
 from pt.deteccion import DetectorLaser, DetectorLaserRojo, DetectorLuz, DetectorAvionRojo
 from pt.supervisor import Supervisor, Estado
@@ -53,6 +56,8 @@ def argumentos():
     ap.add_argument("--baudios", type=int)
     ap.add_argument("--habilitar", action="store_true", help="habilita los drivers del ESP32 (mueve los motores)")
     ap.add_argument("--feedforward", action="store_true", help="envía ω_ff (velocidad estimada del objetivo)")
+    ap.add_argument("--ganancias-sim", nargs=4, type=float, metavar=("KP_PAN", "KI_PAN", "KP_TILT", "KI_TILT"),
+                    help="sólo con --enlace simulado: ganancias del PI simulado (por defecto, las de config.h)")
     ap.add_argument("--tiempo-real", action="store_true", help="fuente sintética al ritmo real de la cámara")
     ap.add_argument("--lampara", action="store_true", help="fuente sintética: agrega una lámpara blanca fija")
     ap.add_argument("--ventana", action="store_true", help="muestra la imagen (requiere OpenCV y pantalla)")
@@ -60,7 +65,9 @@ def argumentos():
     #* MON-1 / MON-2: tablero web en la red local, en un hilo aparte (sin monitor HDMI).
     red = ap.add_argument_group("monitoreo por red (MON-1 / MON-2)")
     red.add_argument("--monitor", action="store_true",
-                     help="tablero web en http://<rpi>.local:<puerto> (sólo lectura)")
+                     help="tablero web en http://<rpi>.local:<puerto>, con ajustes en vivo")
+    red.add_argument("--monitor-solo-lectura", action="store_true",
+                     help="el tablero no puede cambiar parámetros (como antes del 17-11)")
     red.add_argument("--monitor-puerto", type=int, default=8000, help="puerto HTTP (por defecto 8000)")
     red.add_argument("--monitor-hz", type=float, default=20.0,
                      help="refrescos por segundo del tablero; cada refresco trae TODOS los cuadros nuevos")
@@ -115,6 +122,128 @@ class Ventana:
         self.cv2.destroyAllWindows()
 
 
+#* Archivo donde el tablero guarda los perfiles por objetivo ("Guardar perfil").
+RUTA_PERFILES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "perfiles.json")
+
+
+def lista_de_ajustes(a, P, con_camara):
+    """Parámetros que el tablero puede cambiar con el lazo corriendo (pt/ajustes.py).
+    Cada uno lleva su rango: el servidor rechaza lo que esté fuera, antes de que llegue al lazo."""
+    from pt.ajustes import Ajuste
+    c, pr = P.captura, P.prediccion
+    L = []
+    if con_camara:
+        #? Tope de exposición = período de cuadro (12 500 µs a 80 fps): los fps están fijos, así
+        #? que libcamera recorta cualquier valor mayor.
+        L += [Ajuste("exposicion_us", "Exposición", "Cámara", "int", int(c.exposicion_us), 100, int(1e6 / c.fps), 100, "µs",
+                     ayuda="Más exposición: imagen más clara, pero más desenfoque de movimiento."),
+              Ajuste("ganancia", "Ganancia analógica", "Cámara", "float", float(c.ganancia), 1.0, 10.0, 0.1, "×",
+                     ayuda="Aclara sin alargar la exposición; sube el ruido.")]
+        if c.ganancias_color:
+            L += [Ajuste("color_rojo", "Ganancia de color rojo", "Cámara", "float", float(c.ganancias_color[0]),
+                         0.5, 4.0, 0.05, "×", ayuda="Balance de blancos fijo. Sube el nivel del plano V (láser y avión)."),
+                  Ajuste("color_azul", "Ganancia de color azul", "Cámara", "float", float(c.ganancias_color[1]),
+                         0.5, 4.0, 0.05, "×")]
+    L += [
+        Ajuste("detector", "Detector", "Objetivo", "opcion", a.detector, opciones=("rojo", "luz", "avion", "brillo"),
+               ayuda="rojo = láser; luz = flash; avion = avión rojo; brillo = pico de brillo (original)."),
+        Ajuste("rojo.v_umbral", "Umbral de rojo (plano V)", "Detector", "int", P.deteccion_roja.v_umbral, 129, 255, 1,
+               detector="rojo", ayuda="128 = neutro, 255 = rojo puro."),
+        Ajuste("rojo.y_min", "Brillo mínimo (plano Y)", "Detector", "int", P.deteccion_roja.y_min, 0, 255, 1,
+               detector="rojo", ayuda="0 = sin confirmación de brillo."),
+        Ajuste("luz.umbral", "Umbral de brillo", "Detector", "int", P.deteccion_luz.umbral, 1, 255, 1, detector="luz"),
+        Ajuste("luz.min_pix", "Píxeles mínimos", "Detector", "int", P.deteccion_luz.min_pix, 1, 500, 1, "px", detector="luz"),
+        Ajuste("avion.v_umbral", "Umbral de rojo (plano V)", "Detector", "int", P.deteccion_avion.v_umbral, 129, 255, 1,
+               detector="avion", ayuda="128 = neutro, 255 = rojo puro."),
+        Ajuste("avion.min_pix", "Píxeles mínimos (plano V)", "Detector", "int", P.deteccion_avion.min_pix, 1, 500, 1, "px",
+               detector="avion"),
+        Ajuste("brillo.umbral_abs", "Umbral de brillo", "Detector", "int", P.deteccion.umbral_abs, 1, 255, 1,
+               detector="brillo"),
+        #? Piso de 0,60: con orden 3 a 80 fps, más abajo la predicción amplifica el ruido y la traza
+        #? de P se acerca al tope de rls_predictor.py (ver docs/prediccion_rls.pdf, sección 4).
+        Ajuste("lam", "Factor de olvido λ", "Predicción", "float", float(pr.lam), 0.60, 0.99, 0.01,
+               ayuda="Más alto: filtra más el ruido y reacciona más lento. Memoria ≈ 1/(1−λ) cuadros."),
+        Ajuste("sigma_min_deg", "Piso del gating (σ mín.)", "Predicción", "float", float(pr.sigma_min_deg), 0.02, 1.0, 0.01, "°",
+               ayuda="Una medición se rechaza si se aleja más de 6 veces este valor de lo previsto. Subirlo si el centroide del objetivo salta (mancha grande o forma que cambia): 6 veces el piso debe superar ese salto."),
+        Ajuste("reinicio_informado", "Reinicio sin pasar por PÉRDIDA", "Predicción", "bool", bool(pr.reinicio_informado),
+               en_perfil=False, ayuda="Tras 3 rechazos seguidos, el estimador nuevo parte con esas mediciones. Apagado: como antes del 17-11."),
+        Ajuste("gating_conjunto", "Gating conjunto (pan y tilt)", "Predicción", "bool", bool(pr.gating_conjunto),
+               en_perfil=False, ayuda="La medición se acepta o se rechaza completa, y la confianza mira los dos ejes. Apagado: cada eje decide solo."),
+        Ajuste("t_acel_max_s", "Oclusión: tope de la aceleración", "Predicción", "float", float(pr.t_acel_max_s), 0.0, 0.30, 0.01, "s",
+               en_perfil=False, ayuda="0 = apagado. Mayor que 0: pasado ese tiempo sin medición, se extrapola a velocidad constante. Sólo conviene con objetivos sin aceleración."),
+        Ajuste("orden", "Orden del RLS", "Predicción", "opcion", int(pr.orden), opciones=(2, 3), en_perfil=False,
+               ayuda="2 = posición y velocidad; 3 = además aceleración. Cambiarlo reinicia el estimador."),
+        Ajuste("feedforward", "Feedforward de velocidad (ω_ff)", "Predicción", "bool", bool(P.lazo.usar_feedforward),
+               en_perfil=False, ayuda="Envía al ESP32 la velocidad estimada del objetivo, además de θ_ref."),
+    ]
+    return L
+
+
+class AjustesEnVivo:
+    """Aplica, dentro del lazo, los cambios pedidos desde el tablero (ya validados en pt/ajustes.py)."""
+
+    def __init__(self, aj, a, P, fuente, detectores, ref, sup):
+        self.aj, self.a, self.P, self.fuente = aj, a, P, fuente
+        self.detectores, self.ref, self.sup = detectores, ref, sup
+        self.params_det = {"rojo": P.deteccion_roja, "luz": P.deteccion_luz,
+                           "avion": P.deteccion_avion, "brillo": P.deteccion}
+
+    def aplicar(self, det, t):
+        """Una vez por cuadro, antes de detectar. Devuelve el detector vigente (puede haber cambiado)."""
+        for clave, valor, origen in self.aj.pendientes():
+            try:
+                det = self._uno(det, clave, valor, t)
+            except Exception as ex:
+                #! Un ajuste que falla (p. ej. la cámara rechaza un control) no debe botar el lazo
+                #! con los motores andando: se avisa y el valor anterior sigue vigente.
+                print(f"Ajuste {clave} = {valor!r} no aplicado: {ex!r}")
+                continue
+            self.aj.confirmar(clave, valor, origen)
+        return det
+
+    def _uno(self, det, clave, valor, t):
+        P = self.P
+        if clave == "_perfil":
+            pass                                     # marca de "perfil aplicado": sólo se confirma
+        elif clave == "detector":
+            if valor != self.a.detector:
+                #* Otro objetivo: lo que se venía siguiendo ya no vale. Detector y estimador parten
+                #* de cero y el supervisor vuelve a BÚSQUEDA; mientras tanto la plataforma RETIENE
+                #* la última referencia, hasta adquirir el objetivo nuevo (n_adquisicion cuadros).
+                self.a.detector = valor
+                det = self.detectores[valor]
+                det.reiniciar()
+                self.ref.reiniciar()
+                self.sup.reiniciar_busqueda(t, f"cambio de objetivo: detector {valor}")
+        elif clave in ("exposicion_us", "ganancia"):
+            self.fuente.ajustar(**{clave: valor})
+        elif clave in ("color_rojo", "color_azul"):
+            r, b = P.captura.ganancias_color
+            self.fuente.ajustar(ganancias_color=(valor, b) if clave == "color_rojo" else (r, valor))
+        elif clave == "lam":
+            P.prediccion.lam = valor
+            for eje in (self.ref.est.eu, self.ref.est.ew):
+                eje.rls.lam = valor                  #* sin reiniciar: el RLS sigue con su historia
+        elif clave == "sigma_min_deg":
+            P.prediccion.sigma_min_deg = valor
+            for eje in (self.ref.est.eu, self.ref.est.ew):
+                eje.sigma_min = valor
+        elif clave == "orden":
+            if valor != P.prediccion.orden:
+                P.prediccion.orden = valor
+                self.ref.reiniciar()                 # otro número de parámetros: el estimador parte de cero
+        elif clave == "feedforward":
+            P.lazo.usar_feedforward = bool(valor)
+        elif clave in ("reinicio_informado", "gating_conjunto"):
+            setattr(P.prediccion, clave, bool(valor))    #* prediccion.py lo lee en cada cuadro
+        elif clave == "t_acel_max_s":
+            P.prediccion.t_acel_max_s = float(valor)
+        else:                                        # "<detector>.<atributo>": umbral de un detector
+            nombre_det, atributo = clave.split(".", 1)
+            setattr(self.params_det[nombre_det], atributo, valor)
+        return det
+
+
 class MonitorRed:
     """MON-1 / MON-2: publica las variables de seguimiento en un tablero web (pt/monitor_red.py).
 
@@ -122,9 +251,9 @@ class MonitorRed:
     el estado lento y una copia de la imagen. Ver el tablero nunca frena el control.
     """
 
-    def __init__(self, a, P, geo, enl, reg):
+    def __init__(self, a, P, geo, enl, reg, ajustes=None):
         from pt.monitor_red import ServidorMonitor
-        self.a, self.geo, self.enl = a, geo, enl
+        self.a, self.geo, self.enl, self.aj = a, geo, enl, ajustes
         fps = P.captura.fps
         config = {
             "fps": fps, "ancho": int(P.captura.salida_px[0]), "alto": int(P.captura.salida_px[1]),
@@ -138,7 +267,7 @@ class MonitorRed:
         self.srv = ServidorMonitor(puerto=a.monitor_puerto, host=a.monitor_host, hz=a.monitor_hz,
                                    imagen_hz=a.monitor_imagen_hz, segundos=a.monitor_segundos, fps=fps,
                                    config=config, archivos={"registro.csv": lambda: reg.ruta},
-                                   telemetria=getattr(enl, "historial_tel", None))
+                                   telemetria=getattr(enl, "historial_tel", None), ajustes=ajustes)
         self.cada_estado = max(1, int(round(fps / max(a.monitor_hz, 1.0))))
         self.cada_imagen = max(1, int(round(fps / a.monitor_imagen_hz))) if a.monitor_imagen_hz > 0 else 0
         self.validos = collections.deque(maxlen=int(2 * fps))      # % de detección en los últimos 2 s
@@ -178,6 +307,10 @@ class MonitorRed:
                 "textos": list(getattr(self.enl, "textos", []))[-6:],
                 "bitacora": [[tt - self.t0_ns * 1e-9, getattr(d, "value", str(d)), getattr(h, "value", str(h)), str(causa)]
                              for (tt, d, h, causa) in list(sup.bitacora)[-8:]],
+                #* Ajustes en vivo: valores VIGENTES (ya aplicados por el lazo) y lo que la cámara
+                #* informa en los metadatos de este cuadro (puede diferir de lo pedido si lo recortó).
+                "aj": self.aj.estado() if self.aj else None,
+                "cam": {"exp_us": c.meta.get("ExposureTime"), "gan": c.meta.get("AnalogueGain")},
             })
         if self.cada_imagen and c.k % self.cada_imagen == 0 and self.srv.quiere_imagen():
             self.srv.publicar_imagen(np.ascontiguousarray(c.img).copy())
@@ -197,6 +330,11 @@ class MonitorRed:
 def main():
     a = argumentos()
     signal.signal(signal.SIGTERM, _sigterm)
+    #* El lazo comparte el intérprete con otros hilos de Python (lector de telemetría, servidor
+    #* del tablero). Por defecto Python cambia de hilo cada 5 ms; con 0,5 ms, una descarga de CSV
+    #* desde el tablero deja de retrasar al lazo. Medido en simulación con descargas continuas:
+    #* p99 de la latencia total 18,8 -> 13,8 ms (sin tablero: 13,0 ms).
+    sys.setswitchinterval(0.0005)
     P = Parametros()
     if a.fps:
         P.captura.fps = a.fps
@@ -212,6 +350,9 @@ def main():
         P.lazo.usar_feedforward = True
     if a.enlace == "simulado" and a.fuente != "sintetica":
         raise SystemExit("--enlace simulado sólo tiene sentido con --fuente sintetica")
+    if a.ganancias_sim and a.enlace != "simulado":
+        #! Las ganancias reales viven en el ESP32 (config.h o comando k de su consola): la RPi no las cambia.
+        raise SystemExit("--ganancias-sim sólo vale con --enlace simulado (en el ESP32 real: comando k <eje> <Kp> <Ki>)")
     if a.monitor and a.fuente == "sintetica" and not a.tiempo_real:
         a.tiempo_real = True             #* con el tablero abierto, la simulación va al ritmo real
         print("Monitor: fuente sintética en tiempo real (--tiempo-real).")
@@ -231,7 +372,13 @@ def main():
         enl = EnlaceTrama(P.enlace, habilitar=a.habilitar)
         print(f"ESP32: {'telemetría OK, estado ' + enl.telemetria.nombre_estado if enl.telemetria else 'SIN TELEMETRÍA'}")
     elif a.enlace == "simulado":
-        enl = EnlaceSimulado(P)
+        if a.ganancias_sim:
+            #* Sólo cambia el PI SIMULADO, para comparar grupos de ganancias antes de ir al laboratorio.
+            kp_pan, ki_pan, kp_tilt, ki_tilt = a.ganancias_sim
+            enl = EnlaceSimulado(P, kp=(kp_pan, kp_tilt), ki=(ki_pan, ki_tilt))
+            print(f"Lazo simulado: pan Kp = {kp_pan:g}, Ki = {ki_pan:g} | tilt Kp = {kp_tilt:g}, Ki = {ki_tilt:g}")
+        else:
+            enl = EnlaceSimulado(P)
     else:
         enl = EnlaceNulo()
 
@@ -251,23 +398,28 @@ def main():
     tiempo_virtual = a.fuente == "sintetica" and not a.tiempo_real
     retardo_ns = int(P.lazo.retardo_enlace_s * 1e9)
 
-    if a.detector == "rojo":
-        det = DetectorLaserRojo(P.deteccion_roja)
-    elif a.detector == "luz":
-        det = DetectorLuz(P.deteccion_luz)
-    elif a.detector == "avion":
-        det = DetectorAvionRojo(P)
-    else:
-        det = DetectorLaser(P.deteccion)
+    #* Los cuatro detectores quedan creados: cambiar de objetivo desde el tablero es elegir otro.
+    detectores = {"rojo": DetectorLaserRojo(P.deteccion_roja), "luz": DetectorLuz(P.deteccion_luz),
+                  "avion": DetectorAvionRojo(P), "brillo": DetectorLaser(P.deteccion)}
+    det = detectores[a.detector]
     ref = ReferenciaVisual(P, geo)
     sup = Supervisor(P.supervisor, con_actuadores=(a.enlace != "nulo"))
     reg = Registro(a.registro, prefijo=f"{a.fuente}_{a.enlace}")
     vista = Ventana(geo) if a.ventana else None
-    mon = MonitorRed(a, P, geo, enl, reg) if a.monitor else None
+    vivo = None
+    if a.monitor and not a.monitor_solo_lectura:
+        from pt.ajustes import Ajustes
+        aj = Ajustes(lista_de_ajustes(a, P, con_camara=(a.fuente == "camara")), PERFILES, RUTA_PERFILES)
+        vivo = AjustesEnVivo(aj, a, P, fuente, detectores, ref, sup)
+    mon = MonitorRed(a, P, geo, enl, reg, ajustes=vivo.aj if vivo else None) if a.monitor else None
     if mon:
         print("Monitor (abrir en el navegador de un equipo en la misma red):")
         for u in mon.urls:
             print("   ", u)
+        if vivo:
+            #! Decisión del equipo (17-11-2026): el tablero puede cambiar parámetros en caliente.
+            print("    AJUSTES EN VIVO activos: cualquier equipo de esta red puede cambiar cámara, objetivo, "
+                  "umbrales y predictor.\n    Para dejar el tablero sin escritura: --monitor-solo-lectura")
 
     lat_total, t_det, err_det, err_pred, err_centro, n_val = [], [], [], [], [], 0
     estado_ant = sup.estado
@@ -279,6 +431,8 @@ def main():
         for c in fuente:
             k = c.k
             t = c.t_exp_ns * 1e-9
+            if vivo:
+                det = vivo.aplicar(det, t)       #* ajustes del tablero, ya validados (pt/ajustes.py)
             seguimiento = sup.estado == Estado.SEGUIMIENTO
 
             # --- PI: detección -----------------------------------------------------------------
@@ -344,6 +498,7 @@ def main():
                      pan_obj=med.pan, tilt_obj=med.tilt, pan_pred=e.u, tilt_pred=e.w,
                      vpan_pred=e.vu, vtilt_pred=e.vw, confianza=e.confianza, t_sin_med_s=e.t_sin_medicion,
                      est_u=e.estado_u, est_w=e.estado_w,
+                     gating_d=e.d_gating, sigma_pan=e.sigma_u, sigma_tilt=e.sigma_w,
                      pan_ref=consigna[0] if consigna else float("nan"),
                      tilt_ref=consigna[1] if consigna else float("nan"),
                      wff_pan=consigna[2] if consigna else float("nan"),
@@ -356,7 +511,10 @@ def main():
                      esp32_tilt_ref=tel.tilt_ref if tel else float("nan"),
                      esp32_w_pan=tel.w_pan if tel else float("nan"),
                      esp32_w_tilt=tel.w_tilt if tel else float("nan"),
-                     u_real=ur, w_real=wr, err_centro_px=e_centro)
+                     u_real=ur, w_real=wr, err_centro_px=e_centro,
+                     detector=a.detector, exp_us=c.meta.get("ExposureTime", ""),
+                     ganancia=c.meta.get("AnalogueGain", ""), lam=P.prediccion.lam,
+                     ff=int(P.lazo.usar_feedforward))
 
             ahora = time.perf_counter()
             fps = 0.9 * fps + 0.1 / max(ahora - t_prev_fps, 1e-6)
