@@ -8,19 +8,19 @@ Flujo por cuadro:
   de aplicación (EP-1..5) -> supervisor (SE-2/3) -> θ_ref (+ ω_ff) al ESP32 (CS-2/CS-3)
   -> el ESP32 cierra el lazo de posición con el PI de pid_t_2 (CS-10) -> registro CSV
 
-Ejemplos:
-  python3 main.py                                          # sintética, sin motores (PC o RPi)
-  python3 main.py --enlace simulado --lampara              # LAZO CERRADO SIMULADO en el PC
-  python3 main.py --fuente camara --duracion 20            # cámara real, sin motores
-  python3 main.py --fuente camara --enlace trama                         # observar: el ESP32 queda DESHABILITADO
-  python3 main.py --fuente camara --enlace trama --habilitar             # LAZO CERRADO REAL (láser rojo)
-  python3 main.py --fuente camara --enlace trama --habilitar --detector luz   # ídem con el flash del celular
-  python3 main.py --fuente camara --duracion 0 ...         # sin fin (Ctrl+C o SIGTERM para detener)
-  python3 main.py ... --monitor                            # tablero web: http://g9-cap.local:8000
-                                                           # (con ajustes en vivo: cámara, objetivo, predictor)
+Uso normal (19-11-2026): se ejecuta UNA vez y todo lo demás se hace desde el tablero.
+  python3 main.py                  # en la RPi: cámara + ESP32 + tablero (http://g9-cap.local:8000), sin fin.
+                                   # Los motores parten CORTADOS; se habilitan, se cortan y se rearman desde
+                                   # el tablero, igual que el objetivo, las ganancias, el cero y las grabaciones.
+  python3 main.py                  # en el PC (sin picamera2): fuente sintética, sin ESP32, 10 s
+Otras formas:
+  python3 main.py --enlace simulado --lampara --monitor    # LAZO CERRADO SIMULADO en el PC, con tablero
+  python3 main.py --detector avion --habilitar             # partir con ese objetivo y los motores habilitados
+  python3 main.py --enlace nulo                            # sólo cámara y detección, sin ESP32
+  python3 main.py --duracion 20 --sin-monitor              # corrida corta sin tablero
 """
-#! --habilitar energiza los motores: sólo con el banco armado, la prueba de signos hecha
-#! ('t pan' / 't tilt' en la consola del ESP32) y alguien a cargo del corte.
+#! Los motores se pueden habilitar desde el tablero (decisión del equipo, 19-11-2026): hacerlo
+#! con el banco armado, la prueba de signos hecha y alguien a cargo de "Cortar motores".
 import argparse
 import collections
 import math
@@ -38,7 +38,7 @@ from pt.deteccion import DetectorLaser, DetectorLaserRojo, DetectorLuz, Detector
 from pt.supervisor import Supervisor, Estado
 from pt.control import ReferenciaVisual
 from pt.enlace import EnlaceNulo, EnlaceTrama, EnlaceSimulado
-from pt.registro import Registro
+from pt.registro import Registro, Grabacion
 
 #* Objetivos que se pueden elegir (opción --detector y tablero).
 DETECTORES = ("rojo", "luz", "avion", "ovni", "avion_rojo", "brillo")
@@ -64,8 +64,10 @@ def crear_detectores(P, ruta_formas=None):
 
 def argumentos():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--fuente", choices=["sintetica", "camara"], default="sintetica")
-    ap.add_argument("--duracion", type=float, default=10.0, help="segundos (0 = sin fin, sólo con --fuente camara)")
+    ap.add_argument("--fuente", choices=["sintetica", "camara"],
+                    help="por defecto: camara si esta máquina tiene picamera2 (la RPi); si no, sintetica")
+    ap.add_argument("--duracion", type=float,
+                    help="segundos; 0 = sin fin. Por defecto: sin fin con la cámara, 10 s con la fuente sintética")
     ap.add_argument("--fps", type=float, help="sobrescribe parametros.Captura.fps")
     ap.add_argument("--exposicion", type=int, help="µs; fija la exposición")
     ap.add_argument("--ganancia", type=float, help="ganancia analógica (luz_2.py usa 2,0)")
@@ -75,11 +77,13 @@ def argumentos():
     ap.add_argument("--objeto", choices=["punto", "circulo"], default="punto",
                     help="fuente sintética: qué se dibuja. punto = láser; circulo = silueta oscura sobre fondo claro "
                          "(para --detector ovni). El avión no se simula: se prueba con cuadros reales")
-    ap.add_argument("--enlace", choices=["nulo", "simulado", "trama"], default="nulo",
-                    help="nulo: sin actuadores; simulado: ESP32 y ejes simulados; trama: ESP32 real")
+    ap.add_argument("--enlace", choices=["nulo", "simulado", "trama"],
+                    help="nulo: sin actuadores; simulado: ESP32 y ejes simulados; trama: ESP32 real. "
+                         "Por defecto: trama con la cámara (si no hay puerto serie, sigue sin ESP32) y nulo con la sintética")
     ap.add_argument("--puerto", help="por defecto /dev/ttyAMA0 (UART del header, pines 8 y 10)")
     ap.add_argument("--baudios", type=int)
-    ap.add_argument("--habilitar", action="store_true", help="habilita los drivers del ESP32 (mueve los motores)")
+    ap.add_argument("--habilitar", action="store_true",
+                    help="habilita los motores AL PARTIR. Sin esto parten cortados y se habilitan desde el tablero")
     ap.add_argument("--feedforward", action="store_true", help="envía ω_ff (velocidad estimada del objetivo)")
     ap.add_argument("--ganancias-sim", nargs=4, type=float, metavar=("KP_PAN", "KI_PAN", "KP_TILT", "KI_TILT"),
                     help="sólo con --enlace simulado: ganancias del PI simulado (por defecto, las de config.h)")
@@ -95,7 +99,12 @@ def argumentos():
     #* MON-1 / MON-2: tablero web en la red local, en un hilo aparte (sin monitor HDMI).
     red = ap.add_argument_group("monitoreo por red (MON-1 / MON-2)")
     red.add_argument("--monitor", action="store_true",
-                     help="tablero web en http://<rpi>.local:<puerto>, con ajustes en vivo")
+                     help="tablero web en http://<rpi>.local:<puerto>, con ajustes y mando en vivo. "
+                          "Con la cámara va por defecto")
+    red.add_argument("--sin-monitor", action="store_true", help="sin tablero web")
+    red.add_argument("--sin-mando", action="store_true",
+                     help="el tablero no puede mandar al ESP32 (habilitar motores, ganancias, cero, referencia de "
+                          "prueba) ni grabar experimentos; conserva los ajustes en vivo")
     red.add_argument("--monitor-solo-lectura", action="store_true",
                      help="el tablero no puede cambiar parámetros (como antes del 17-11)")
     red.add_argument("--monitor-puerto", type=int, default=8000, help="puerto HTTP (por defecto 8000)")
@@ -107,7 +116,24 @@ def argumentos():
                      help="0.0.0.0 = toda la red local; 127.0.0.1 = sólo por túnel SSH")
     red.add_argument("--monitor-segundos", type=float, default=120.0,
                      help="historia en memoria que se puede exportar (/historial.csv)")
-    return ap.parse_args()
+    return resolver_por_defecto(ap.parse_args())
+
+
+def resolver_por_defecto(a):
+    """Lo que no se escribe en la línea de comandos se decide según dónde corre (19-11-2026):
+    en la RPi, 'python3 main.py' a secas es cámara + ESP32 + tablero, sin fin; en el PC, la
+    fuente sintética sin actuadores, como siempre. Lo escrito a mano manda."""
+    import importlib.util
+    a.enlace_pedido = a.enlace                   # None = enlace por defecto (no es error que falte el puerto)
+    if a.fuente is None:
+        hay_camara = importlib.util.find_spec("picamera2") is not None
+        a.fuente = "camara" if (hay_camara and a.enlace != "simulado") else "sintetica"
+    if a.enlace is None:
+        a.enlace = "trama" if a.fuente == "camara" else "nulo"
+    if a.duracion is None:
+        a.duracion = 0.0 if a.fuente == "camara" else 10.0
+    a.monitor = (a.monitor or a.fuente == "camara") and not a.sin_monitor
+    return a
 
 
 def _sigterm(_signo, _frame):
@@ -363,6 +389,121 @@ class AjustesEnVivo:
         return det
 
 
+class MandoEnVivo:
+    """Ejecuta, dentro del lazo, las órdenes del tablero ya validadas (pt/mando.py)."""
+    #* Cada orden devuelve un texto con lo que pasó: va al historial del tablero y a la consola.
+    #* Lo que el firmware sólo acepta por su consola de texto (ganancias, cero, estado, prueba de
+    #* signos) se pide con enl.consola(): el enlace se pausa cerca de 1,5 s y sigue solo.
+
+    def __init__(self, m, enl, sup, ref, grab):
+        self.m, self.enl, self.sup, self.ref, self.grab = m, enl, sup, ref, grab
+        self.manual = None          # (pan, tilt) [°]: referencia de prueba. None = seguimiento
+        self.archivos = None        # descargas del tablero (lo fija MonitorRed)
+
+    def aplicar(self, det, t):
+        for accion, args, origen in self.m.pendientes():
+            try:
+                texto = self._uno(accion, args, det, t)
+            except Exception as ex:
+                #! Una orden que falla no debe botar el lazo con los motores andando.
+                texto = f"{accion}: no aplicado ({ex!r})"
+            print(f"Mando ({origen or 'local'}): {texto}")
+            self.m.anotar(texto, origen)
+
+    def _desde_cero(self, det, t, causa):
+        """La pose o el objetivo cambiaron de golpe: estimador y detector parten de nuevo, y la
+        referencia retenida se toma otra vez de donde está la plataforma."""
+        self.ref.reiniciar()
+        self.ref.ref_retencion = None
+        det.reiniciar()
+        self.sup.reiniciar_busqueda(t, causa)
+
+    def _uno(self, accion, args, det, t):
+        enl, sup = self.enl, self.sup
+        tel = getattr(enl, "telemetria", None)
+        if accion == "habilitar":
+            ok, d = enl.habilitar()
+            if not ok:
+                return f"habilitar: {d}"
+            #* Parte reteniendo donde está: sin esto iría a la última referencia del seguimiento,
+            #* que puede ser vieja si la plataforma se movió a mano con los motores cortados.
+            self._desde_cero(det, t, "motores habilitados")
+            sup.rearmar(t, "habilitar desde el tablero")
+            return "motores HABILITADOS"
+        if accion == "deshabilitar":
+            ok, d = enl.deshabilitar()
+            self.manual = None
+            return "motores CORTADOS" if ok else f"cortar: {d}"
+        if accion == "retener":
+            if not enl.puede_mover or tel is None:
+                return "retener: los motores están cortados"
+            self.manual = (round(tel.pan_med, 3), round(tel.tilt_med, 3))
+            return f"retenido en pan {self.manual[0]:+.2f}°, tilt {self.manual[1]:+.2f}° (referencia manual)"
+        if accion == "rearmar":
+            ok, d = enl.rearmar()
+            hubo = sup.rearmar(t)
+            self._desde_cero(det, t, "rearme")
+            return ("rearmado: " if hubo else "no estaba en MODO_SEGURO; ") + d
+        if accion == "estado":
+            ok, d = enl.consola("p", 0.6)
+            return f"estado: {d}"
+        if accion == "cero":
+            #! El firmware sólo fija el cero con los drivers deshabilitados: se cortan antes.
+            if enl.puede_mover:
+                enl.deshabilitar()
+            self.manual = None
+            ok, d = enl.consola("z", 0.6)
+            if ok:
+                self._desde_cero(det, t, "cero nuevo")
+            return f"cero (motores cortados): {d}"
+        if accion == "prueba_signos":
+            if not enl.puede_mover:
+                return "prueba de signos: primero habilitar los motores"
+            ok, d = enl.consola(f"t {args['eje']}", 3.0)
+            return f"prueba de signos de {args['eje']}: {d}"
+        if accion == "ganancias":
+            ok, d = enl.fijar_ganancias(args["eje"], args["kp"], args["ki"])
+            return f"ganancias de {args['eje']} (Kp {args['kp']:g}, Ki {args['ki']:g}): {d}"
+        if accion == "aceleracion":
+            ok, d = enl.consola(f"a {args['eje']} {args['alfa']:.1f}", 0.4)
+            return f"aceleración máxima de {args['eje']} ({args['alfa']:g} °/s²): {d}"
+        if accion == "referencia":
+            if not enl.puede_mover:
+                return "referencia de prueba: los motores están cortados"
+            self.manual = (args["pan"], args["tilt"])
+            return f"referencia manual: pan {args['pan']:+.2f}°, tilt {args['tilt']:+.2f}°"
+        if accion == "seguimiento":
+            if self.manual is None:
+                return "ya estaba en seguimiento"
+            self.manual = None
+            self.ref.reiniciar()
+            det.reiniciar()
+            sup.reiniciar_busqueda(t, "fin de la referencia manual")
+            return "vuelve al seguimiento (retiene hasta adquirir el objetivo)"
+        if accion == "grabar":
+            ruta = self.grab.iniciar(args["etiqueta"])
+            if self.archivos is not None:
+                self.archivos[os.path.basename(ruta)] = lambda r=ruta: r
+            return f"grabando «{args['etiqueta']}» en {ruta}"
+        if accion == "detener_grabacion":
+            hecho = self.grab.detener()
+            return f"grabación guardada: {hecho[1]} ({hecho[2]} filas)" if hecho else "no había grabación en curso"
+        return f"{accion}: sin implementar"
+
+    def estado(self):
+        """Lo vigente, para el tablero."""
+        enl, g = self.enl, self.grab
+        self.m.publicar(
+            motores=bool(getattr(enl, "puede_mover", False)),
+            con_esp32=getattr(enl, "telemetria", None) is not None,
+            manual=list(self.manual) if self.manual else None,
+            gan={k: list(v) for k, v in (getattr(enl, "ganancias", None) or {}).items()},
+            consola=bool(getattr(enl, "consola_pendiente", getattr(enl, "en_consola", False))),
+            grab={"activa": g.activa, "etiqueta": g.etiqueta, "filas": g.reg.n if g.activa else 0},
+            grabs=[[n, filas, etq] for (n, _, filas, etq) in g.hechas[-8:]])
+        return self.m.estado()
+
+
 class MonitorRed:
     """MON-1 / MON-2: publica las variables de seguimiento en un tablero web (pt/monitor_red.py).
 
@@ -370,9 +511,9 @@ class MonitorRed:
     el estado lento y una copia de la imagen. Ver el tablero nunca frena el control.
     """
 
-    def __init__(self, a, P, geo, enl, reg, ajustes=None):
+    def __init__(self, a, P, geo, enl, reg, ajustes=None, mando=None):
         from pt.monitor_red import ServidorMonitor
-        self.a, self.geo, self.enl, self.aj = a, geo, enl, ajustes
+        self.a, self.geo, self.enl, self.aj, self.mando = a, geo, enl, ajustes, mando
         fps = P.captura.fps
         config = {
             "fps": fps, "ancho": int(P.captura.salida_px[0]), "alto": int(P.captura.salida_px[1]),
@@ -386,7 +527,10 @@ class MonitorRed:
         self.srv = ServidorMonitor(puerto=a.monitor_puerto, host=a.monitor_host, hz=a.monitor_hz,
                                    imagen_hz=a.monitor_imagen_hz, segundos=a.monitor_segundos, fps=fps,
                                    config=config, archivos={"registro.csv": lambda: reg.ruta},
-                                   telemetria=getattr(enl, "historial_tel", None), ajustes=ajustes)
+                                   telemetria=getattr(enl, "historial_tel", None), ajustes=ajustes,
+                                   mando=mando.m if mando else None)
+        if mando:
+            mando.archivos = self.srv.archivos       # las grabaciones quedan descargables desde el tablero
         self.cada_estado = max(1, int(round(fps / max(a.monitor_hz, 1.0))))
         self.cada_imagen = max(1, int(round(fps / a.monitor_imagen_hz))) if a.monitor_imagen_hz > 0 else 0
         self.validos = collections.deque(maxlen=int(2 * fps))      # % de detección en los últimos 2 s
@@ -430,6 +574,8 @@ class MonitorRed:
                 #* Ajustes en vivo: valores VIGENTES (ya aplicados por el lazo) y lo que la cámara
                 #* informa en los metadatos de este cuadro (puede diferir de lo pedido si lo recortó).
                 "aj": self.aj.estado() if self.aj else None,
+                #* Mando: motores, referencia manual, ganancias del PI, ventana de consola y grabaciones.
+                "mando": self.mando.estado() if self.mando else None,
                 "cam": {"exp_us": c.meta.get("ExposureTime"), "gan": c.meta.get("AnalogueGain")},
             })
         if self.cada_imagen and c.k % self.cada_imagen == 0 and self.srv.quiere_imagen():
@@ -495,8 +641,20 @@ def main():
     print("Geometría:", geo.resumen())
 
     if a.enlace == "trama":
-        enl = EnlaceTrama(P.enlace, habilitar=a.habilitar)
-        print(f"ESP32: {'telemetría OK, estado ' + enl.telemetria.nombre_estado if enl.telemetria else 'SIN TELEMETRÍA'}")
+        try:
+            enl = EnlaceTrama(P.enlace, habilitar=a.habilitar)
+        except Exception as ex:
+            if a.enlace_pedido == "trama":
+                raise SystemExit(f"No se pudo abrir el enlace con el ESP32 ({P.enlace.puerto}): {ex}")
+            #* Enlace por defecto y sin puerto serie (p. ej. la RPi sin el UART activado): se sigue sin ESP32.
+            print(f"AVISO: sin enlace con el ESP32 ({P.enlace.puerto}: {ex}). Se sigue sólo con cámara y detección.")
+            a.enlace, enl = "nulo", EnlaceNulo()
+        else:
+            print(f"ESP32: {'telemetría OK, estado ' + enl.telemetria.nombre_estado if enl.telemetria else 'SIN TELEMETRÍA'}"
+                  f" | motores {'HABILITADOS' if a.habilitar else 'cortados (se habilitan desde el tablero)'}")
+            #* Ganancias vigentes del PI: se piden por la consola del firmware (comando p), para
+            #* mostrarlas en el tablero y dejarlas en el CSV. Cuesta una pausa del enlace al partir.
+            enl.consola("p", 0.5)
     elif a.enlace == "simulado":
         if a.ganancias_sim:
             #* Sólo cambia el PI SIMULADO, para comparar grupos de ganancias antes de ir al laboratorio.
@@ -558,7 +716,13 @@ def main():
               + (f" | no aplicado: {malos}" if malos else "")
               + (f" | de la línea de comandos: {', '.join(excluir_inicio)}" if excluir_inicio else "")
               + ". Para partir sin perfil: --sin-perfil")
-    mon = MonitorRed(a, P, geo, enl, reg, ajustes=vivo.aj if vivo else None) if a.monitor else None
+    #* Mando del ESP32 y grabación de experimentos desde el tablero (pt/mando.py).
+    grab = Grabacion(a.registro)
+    mando = None
+    if a.monitor and not a.monitor_solo_lectura and not a.sin_mando:
+        from pt.mando import Mando
+        mando = MandoEnVivo(Mando(P.lazo.lim_pan_deg, P.lazo.lim_tilt_deg), enl, sup, ref, grab)
+    mon = MonitorRed(a, P, geo, enl, reg, ajustes=vivo.aj if vivo else None, mando=mando) if a.monitor else None
     if mon:
         print("Monitor (abrir en el navegador de un equipo en la misma red):")
         for u in mon.urls:
@@ -567,6 +731,10 @@ def main():
             #! Decisión del equipo (17-11-2026): el tablero puede cambiar parámetros en caliente.
             print("    AJUSTES EN VIVO activos: cualquier equipo de esta red puede cambiar cámara, objetivo, "
                   "umbrales y predictor.\n    Para dejar el tablero sin escritura: --monitor-solo-lectura")
+        if mando:
+            #! Decisión del equipo (19-11-2026): el tablero puede habilitar y mover los motores.
+            print("    MANDO activo: desde el tablero se habilitan, cortan y rearman los motores, se fijan cero y "
+                  "ganancias, se da una referencia de prueba\n    y se graban experimentos. Para quitarlo: --sin-mando")
 
     lat_total, t_det, err_det, err_pred, err_centro, n_val = [], [], [], [], [], 0
     estado_ant = sup.estado
@@ -580,6 +748,8 @@ def main():
             t = c.t_exp_ns * 1e-9
             if vivo:
                 det = vivo.aplicar(det, t)       #* ajustes del tablero, ya validados (pt/ajustes.py)
+            if mando:
+                mando.aplicar(det, t)            #* órdenes del tablero, ya validadas (pt/mando.py)
             seguimiento = sup.estado == Estado.SEGUIMIENTO
 
             # --- PI: detección -----------------------------------------------------------------
@@ -604,7 +774,10 @@ def main():
             med, e = ref.actualizar(t_obj, r, pose, t_aplic)
 
             # --- SE ----------------------------------------------------------------------------
-            estado = sup.paso(t, med.valida, e.confianza, enl.ok(), enl.listo(), enl.en_falla())
+            #* Con los motores cortados, MODO_SEGURO se deja solo cuando la causa desaparece; con
+            #* los motores habilitados hace falta "Rearmar" en el tablero (pt/supervisor.py).
+            estado = sup.paso(t, med.valida, e.confianza, enl.ok(), enl.listo(), enl.en_falla(),
+                              rearme_auto=not getattr(enl, "puede_mover", False))
             if estado != estado_ant and estado in (Estado.BUSQUEDA, Estado.PERDIDA):
                 det.reiniciar()                  # la ventana vuelve al cuadro completo
                 if estado == Estado.BUSQUEDA:
@@ -613,14 +786,26 @@ def main():
 
             # --- CS-2 / CS-3: consigna al ESP32 --------------------------------------------------
             consigna = None
+            manual = mando.manual if mando else None
             if estado == Estado.MODO_SEGURO:
                 if not modo_seguro_avisado:
                     enl.retener()                #! la RPi deja de mandar consignas; el ESP32 retiene
                     modo_seguro_avisado = True
-            elif estado not in (Estado.INICIALIZACION, Estado.HOMING):
-                consigna = ref.consigna(estado == Estado.SEGUIMIENTO, e, pose)
-                if consigna is not None:
-                    enl.enviar_consigna(*consigna, t_ns=t_envio)
+            else:
+                modo_seguro_avisado = False      # si vuelve a caer, se retiene de nuevo
+                if estado not in (Estado.INICIALIZACION, Estado.HOMING):
+                    if manual is not None:
+                        #* Referencia de prueba del tablero: reemplaza a la del seguimiento (sin ω_ff).
+                        consigna = (manual[0], manual[1], 0.0, 0.0)
+                        ref.ref_retencion = (manual[0], manual[1])   # al volver, se retiene donde quedó
+                    else:
+                        consigna = ref.consigna(estado == Estado.SEGUIMIENTO, e, pose)
+                    if consigna is not None:
+                        enl.enviar_consigna(*consigna, t_ns=t_envio)
+            if consigna is None:
+                #* Sin consigna que mandar (arranque, MODO_SEGURO): un latido mantiene la telemetría,
+                #* que es lo que permite ver que el ESP32 volvió y salir de MODO_SEGURO.
+                enl.latido()
 
             # --- Métricas ----------------------------------------------------------------------
             t_fin = time.monotonic_ns()
@@ -647,7 +832,8 @@ def main():
                 err_pred.append((math.hypot(up - uh, wp - wh), math.hypot(r.u - uh, r.w - wh)))
 
             tel = getattr(enl, "telemetria", None)
-            reg.fila(k=k, t_exp_ns=c.t_exp_ns, t_entrega_ns=c.t_entrega_ns, t_fin_ns=t_fin,
+            gan = getattr(enl, "ganancias", None) or {}
+            fila_csv = dict(k=k, t_exp_ns=c.t_exp_ns, t_entrega_ns=c.t_entrega_ns, t_fin_ns=t_fin,
                      lat_captura_ms=(c.t_entrega_ns - c.t_exp_ns) / 1e6, lat_total_ms=lat,
                      t_det_ms=r.t_proc_ms, estado=estado.value, valido=int(r.valido), motivo=r.motivo,
                      u=r.u, w=r.w, pico=r.pico, area=r.area, forma=r.forma, forma_dist=r.dist,
@@ -672,7 +858,13 @@ def main():
                      u_real=ur, w_real=wr, err_centro_px=e_centro,
                      detector=a.detector, exp_us=c.meta.get("ExposureTime", ""),
                      ganancia=c.meta.get("AnalogueGain", ""), lam=P.prediccion.lam,
-                     ff=int(P.lazo.usar_feedforward))
+                     ff=int(P.lazo.usar_feedforward),
+                     kp_pan=gan.get("pan", ("", ""))[0], ki_pan=gan.get("pan", ("", ""))[1],
+                     kp_tilt=gan.get("tilt", ("", ""))[0], ki_tilt=gan.get("tilt", ("", ""))[1],
+                     manual=int(manual is not None), experimento=grab.etiqueta)
+            reg.fila(**fila_csv)
+            if grab.activa:
+                grab.fila(**fila_csv)            #* experimento en curso: las mismas filas, en su propio CSV
 
             ahora = time.perf_counter()
             fps = 0.9 * fps + 0.1 / max(ahora - t_prev_fps, 1e-6)
@@ -690,6 +882,9 @@ def main():
         enl.cerrar()
         fuente.cerrar()
         reg.cerrar()
+        hecho = grab.detener()
+        if hecho:
+            print(f"Grabación cerrada al terminar: {hecho[1]} ({hecho[2]} filas)")
         if vista:
             vista.cerrar()
         if mon:

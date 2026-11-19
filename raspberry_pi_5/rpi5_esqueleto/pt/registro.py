@@ -28,6 +28,10 @@ COLUMNAS = [
     "gating_d", "sigma_pan", "sigma_tilt",
     #* Detector por forma: plantilla más parecida y su distancia (se acepta si <= dist_max).
     "forma", "forma_dist",
+    #* Mando desde el tablero (19-11-2026): ganancias del PI vigentes en el ESP32 (vacío si no se
+    #* conocen), 1 = referencia de prueba manual (no es seguimiento) y etiqueta del experimento
+    #* que se está grabando. Con esto una sola corrida se puede separar por ganancias y por ω_ff.
+    "kp_pan", "ki_pan", "kp_tilt", "ki_tilt", "manual", "experimento",
 ]
 
 
@@ -50,3 +54,43 @@ class Registro:
 
     def cerrar(self):
         self.f.close()
+
+
+class Grabacion:
+    """Experimentos guardados aparte, uno por archivo, mientras la corrida sigue (tablero).
+
+    El registro de la corrida completa (Registro) no cambia. Al iniciar una grabación con una
+    etiqueta, las mismas filas se escriben además en registros/exp_<etiqueta>_<fecha>.csv hasta
+    que se detiene. Así cada caso de una comparación (ganancias A sin ω_ff, A con ω_ff...) queda
+    en su propio CSV, listo para herramientas/comparar_ganancias_ff.py --lab."""
+
+    def __init__(self, carpeta="registros"):
+        self.carpeta = carpeta
+        self.reg = None
+        self.etiqueta = ""
+        self.hechas = []            # [(nombre de archivo, ruta, filas, etiqueta)]
+
+    @property
+    def activa(self):
+        return self.reg is not None
+
+    def iniciar(self, etiqueta):
+        if self.activa:
+            self.detener()
+        self.reg = Registro(self.carpeta, prefijo=f"exp_{etiqueta}")
+        self.etiqueta = etiqueta
+        return self.reg.ruta
+
+    def fila(self, **kv):
+        self.reg.fila(**kv)
+
+    def detener(self):
+        """Cierra el archivo. Devuelve (nombre, ruta, filas) o None si no había grabación."""
+        if not self.activa:
+            return None
+        reg, self.reg = self.reg, None
+        reg.cerrar()
+        hecho = (os.path.basename(reg.ruta), reg.ruta, reg.n, self.etiqueta)
+        self.hechas.append(hecho)
+        self.etiqueta = ""
+        return hecho[:3]

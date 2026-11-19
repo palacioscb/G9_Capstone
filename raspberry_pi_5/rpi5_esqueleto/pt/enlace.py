@@ -19,6 +19,7 @@ Formato de trama (igual en esp32_pan_tilt/include/protocolo.h):
 #* que corresponde a la trama que viajó con menos retardo.
 import bisect
 import collections
+import re
 import struct
 import threading
 import time
@@ -190,7 +191,46 @@ class RelojESP32:
 # ---------------------------------------------------------------------------
 # Implementaciones
 # ---------------------------------------------------------------------------
-class EnlaceNulo:
+#* Tiempo de silencio antes de escribir en la consola de texto del ESP32. El firmware ignora
+#* el texto en el UART del enlace mientras éste está "activo", es decir, hasta ENLACE_ACTIVO_MS
+#* (1000 ms, config.h) después de la última trama válida. Se deja un margen.
+SILENCIO_CONSOLA_S = 1.15
+#* Líneas del firmware que informan ganancias: "#  pan  med=... Kp=3.00 Ki=2.25 ..." (comando p)
+#* y "# pan: Kp=5.000 1/s  Ki=6.250 1/s^2" (comando k).
+_RE_GANANCIAS = re.compile(r"\b(pan|tilt)\b.*?Kp=([0-9.]+)(?:\s*1/s)?\s+Ki=([0-9.]+)")
+
+
+class _SinMando:
+    """Órdenes del tablero (pt/mando.py) en los enlaces sin ESP32 real: se rechazan con un texto."""
+    puede_mover = False
+    en_consola = False
+    consola_pendiente = False
+    ganancias = {}
+    _MOTIVO = "este modo de enlace no tiene ESP32"
+
+    def atender(self):
+        pass
+
+    def latido(self):
+        pass
+
+    def habilitar(self):
+        return False, self._MOTIVO
+
+    def deshabilitar(self):
+        return False, self._MOTIVO
+
+    def rearmar(self):
+        return False, self._MOTIVO
+
+    def consola(self, linea, espera_s=0.6):
+        return False, self._MOTIVO
+
+    def fijar_ganancias(self, eje, kp, ki):
+        return False, self._MOTIVO
+
+
+class EnlaceNulo(_SinMando):
     """Sin actuadores: la cámara se considera fija en (0°, 0°) y no se envía nada."""
 
     def __init__(self, *a, **k):
@@ -227,8 +267,15 @@ class EnlaceNulo:
 
 class EnlaceTrama:
     """Firmware esp32_pan_tilt. Un hilo lee la telemetría y la marca con su hora de llegada."""
+    #* Mando desde el tablero (19-11-2026), sin tocar el firmware:
+    #*   - habilitar / deshabilitar / rearmar usan los comandos binarios que ya existían;
+    #*   - ganancias, cero, estado y prueba de signos usan la CONSOLA DE TEXTO del firmware.
+    #*     Como el firmware la ignora con el enlace activo, se abre una "ventana de consola":
+    #*     la RPi calla SILENCIO_CONSOLA_S, escribe la línea, espera la respuesta y retoma.
+    #*     Durante la ventana no hay consignas ni telemetría (ok() lo da por esperado) y el
+    #*     ESP32, si venía en LAZO, pasa solo a RETENCIÓN por su watchdog (100 ms).
 
-    def __init__(self, pe, habilitar=False, puerto_serie=None):
+    def __init__(self, pe, habilitar=False, puerto_serie=None, silencio_consola_s=SILENCIO_CONSOLA_S):
         #! Sin habilitar = sólo observar: se manda DESHABILITAR (no RETENER) y NUNCA consignas.
         #! El ESP32 conserva su estado entre corridas (abrir el puerto no lo reinicia), así que
         #! un "retener" podía dejarlo energizado y siguiendo consignas (revisión del 21-10).
@@ -257,6 +304,12 @@ class EnlaceTrama:
         self.historial_tel = collections.deque(maxlen=200 * 120)
         self.tramas_rx = 0
         self._lock_tx = threading.Lock()
+        self._t_ult_tx = 0.0                             # time.monotonic() de la última trama enviada
+        self._silencio = float(silencio_consola_s)
+        self._cola_cons = collections.deque()            # líneas de consola pedidas: (línea, espera)
+        self._cons = None                                # ventana de consola en curso
+        self.t_fin_consola = 0.0
+        self.ganancias = {}                              # {"pan": (Kp, Ki), "tilt": (Kp, Ki)}, leídas del firmware
         self._corriendo = True
         self._hilo = threading.Thread(target=self._leer, daemon=True)
         self._hilo.start()
@@ -288,6 +341,9 @@ class EnlaceTrama:
                 for linea in texto.decode(errors="replace").splitlines():
                     if linea.strip():
                         self.textos.append(linea.strip())
+                        m = _RE_GANANCIAS.search(linea)
+                        if m:
+                            self.ganancias = {**self.ganancias, m.group(1): (float(m.group(2)), float(m.group(3)))}
                 continue
             if len(buf) < 2:
                 return buf
@@ -320,11 +376,95 @@ class EnlaceTrama:
         with self._lock_tx:
             self.s.write(trama)
             self.seq = (self.seq + 1) & 0xFF
+            self._t_ult_tx = time.monotonic()
 
     def comando(self, codigo):
         self._tx(trama_comando(self.seq, codigo))
 
+    # ---- mando desde el tablero ------------------------------------------------------------
+    def habilitar(self):
+        """Energiza los drivers (el firmware rearma sus fallas si la causa ya no está)."""
+        self.puede_mover, self._visto_activo = True, False
+        self.comando(CMD_HABILITAR)
+        return True, "habilitar enviado"
+
+    def deshabilitar(self):
+        """Corta los motores: los ejes quedan sueltos y la RPi deja de mandar consignas."""
+        self.puede_mover, self._visto_activo = False, False
+        self.comando(CMD_DESHABILITAR)
+        return True, "motores cortados"
+
+    def rearmar(self):
+        """Tras una falla o un reinicio del ESP32: vuelve a habilitar si la RPi lo estaba moviendo."""
+        self._visto_activo = False
+        if self.puede_mover:
+            self.comando(CMD_HABILITAR)
+        return True, "rearme enviado" if self.puede_mover else "sin motores que rearmar (están cortados)"
+
+    @property
+    def en_consola(self):
+        """Ventana de consola en curso: el enlace binario calla. Con líneas en cola pero sin
+        ventana abierta (pausa entre dos líneas) el enlace funciona normal."""
+        return self._cons is not None
+
+    @property
+    def consola_pendiente(self):
+        """Hay una línea en curso o esperando turno (lo que muestra el tablero)."""
+        return self._cons is not None or bool(self._cola_cons)
+
+    def consola(self, linea, espera_s=0.6):
+        """Pide escribir una línea en la consola de texto del firmware (ver la nota de la clase).
+        No bloquea: la ventana avanza con atender(), que el lazo llama en cada cuadro."""
+        linea = str(linea).strip()
+        if not linea or len(linea) > 40 or any(not 0x20 <= ord(ch) <= 0x7E for ch in linea):
+            return False, "línea de consola inválida"
+        if len(self._cola_cons) >= 4:
+            return False, "consola ocupada: esperar a que termine lo anterior"
+        self._cola_cons.append((linea, float(espera_s)))
+        return True, f"«{linea}» en cola: el enlace se pausa {self._silencio + float(espera_s):.1f} s"
+
+    def fijar_ganancias(self, eje, kp, ki):
+        return self.consola(f"k {eje} {kp:.4f} {ki:.4f}", 0.4)
+
+    def atender(self):
+        """Avanza la ventana de consola. Barato si no hay nada pendiente."""
+        if self._cons is None:
+            if not self._cola_cons:
+                return
+            #! Entre dos líneas seguidas el enlace se retoma un momento. El firmware deshabilita
+            #! los drivers si pasa 5 s en RETENCIÓN por watchdog sin consignas
+            #! (DESHABILITAR_SIN_ENLACE_MS): cada ventana debe durar bastante menos que eso.
+            if time.monotonic() - self.t_fin_consola < 0.3:
+                return
+            linea, espera = self._cola_cons.popleft()
+            self._cons = {"linea": linea, "espera": espera, "fase": "silencio", "t": time.monotonic()}
+        c, ahora = self._cons, time.monotonic()
+        if c["fase"] == "silencio":
+            if ahora - self._t_ult_tx >= self._silencio:
+                with self._lock_tx:
+                    self.s.write((c["linea"] + "\n").encode("ascii"))
+                self.textos.append("> " + c["linea"])
+                c["fase"], c["t"] = "respuesta", ahora
+        elif ahora - c["t"] >= c["espera"]:
+            self._cons = None
+            self.t_fin_consola = ahora
+
+    def latido(self):
+        """Mantiene vivo el enlace cuando no hay consigna que mandar (MODO_SEGURO, arranque): el
+        ESP32 sólo envía telemetría mientras recibe tramas. No mueve nada: RETENER no actúa en
+        FALLA ni en DESHABILITADO."""
+        self.atender()
+        if self.en_consola:
+            return
+        ahora = time.monotonic()
+        if ahora - self._t_latido >= 0.2:
+            self._t_latido = ahora
+            self.comando(CMD_RETENER if self.puede_mover else CMD_DESHABILITAR)
+
     def enviar_consigna(self, ref_pan, ref_tilt, wff_pan=0.0, wff_tilt=0.0, t_ns=None):
+        self.atender()
+        if self.en_consola:
+            return                                       #! ventana de consola: el enlace calla
         if not self.puede_mover:
             #* Modo observar: en vez de la consigna, un "deshabilitar" cada 0,2 s, que además
             #* mantiene viva la telemetría (el ESP32 la envía mientras recibe tramas).
@@ -337,7 +477,12 @@ class EnlaceTrama:
 
     # ---- estado ----------------------------------------------------------------------------
     def ok(self):
-        return self.t_ult_tel is not None and (time.monotonic() - self.t_ult_tel) < self.pe.watchdog_s
+        if self.t_ult_tel is None:
+            return False
+        #* En la ventana de consola (y un instante después) el silencio de la telemetría es esperado.
+        if self.en_consola or (time.monotonic() - self.t_fin_consola) < 0.5:
+            return True
+        return (time.monotonic() - self.t_ult_tel) < self.pe.watchdog_s
 
     def listo(self):
         """Homing: con AS5600 absolutos, basta con telemetría válida y sin falla. Si la RPi
@@ -381,9 +526,21 @@ class EnlaceTrama:
             pass
 
 
-class EnlaceSimulado:
+class EnlaceSimulado(_SinMando):
     """ESP32 y ejes simulados: planta de pid_t_2 + el PI del firmware a 1 kHz.
     """
+    puede_mover = True                                   # el simulado siempre está "habilitado"
+    _MOTIVO = "enlace simulado: no hay ESP32 que mandar"
+
+    @property
+    def ganancias(self):
+        return {n: (float(c.kp), float(c.ki)) for n, c in zip(("pan", "tilt"), self.ctl)}
+
+    def fijar_ganancias(self, eje, kp, ki):
+        """Cambia el PI simulado en caliente (para probar el tablero en el PC)."""
+        c = self.ctl[0 if eje == "pan" else 1]
+        c.kp, c.ki = float(kp), float(ki)
+        return True, f"PI simulado de {eje}: Kp = {kp:g}, Ki = {ki:g}"
     #* Permite correr main.py en lazo cerrado en el PC: la fuente sintética dibuja el objetivo
     #* según la pose simulada de la plataforma (pose_en), y la pose responde a las consignas.
     #! Ganancias y límites deben coincidir con esp32_pan_tilt/include/config.h.

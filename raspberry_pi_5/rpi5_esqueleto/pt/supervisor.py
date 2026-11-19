@@ -5,6 +5,13 @@ Estados según D19 (siete). En esta etapa se implementan las transiciones de
 visión (BÚSQUEDA <-> SEGUIMIENTO <-> PÉRDIDA) y la entrada a MODO_SEGURO por
 enlace caído. HOMING se omite mientras no haya finales de carrera ni AS5600.
 
+Salida de MODO_SEGURO (19-11-2026), sin volver a ejecutar main.py:
+  - rearmar(): rearme MANUAL desde el tablero (D21). Vuelve a INICIALIZACIÓN y repite el
+    arranque; si la causa sigue presente, paso() entra de nuevo a MODO_SEGURO y dice por qué.
+  - rearme automático, sólo con los motores cortados (la RPi no está moviendo nada): cuando el
+    enlace lleva t_rearme_auto_s sano y el ESP32 no reporta falla. Cubre el caso de encender
+    o reiniciar el ESP32 con main.py ya corriendo.
+
 Nota: el diseño fija un ciclo de 20 Hz con eventos enclavados; aquí se evalúa
 una vez por cuadro, lo que es equivalente para la PoC (tasa de cámara > 20 Hz).
 """
@@ -31,6 +38,8 @@ class Supervisor:
         self.t_entrada = 0.0
         self.bitacora = []          # SE-6: (t, desde, hacia, causa)
         self.falla = None
+        self._t_sano = None         # desde cuándo la causa del MODO_SEGURO ya no está
+        self._t_rearme = None       # instante del último rearme (plazo de gracia)
 
     # ------------------------------------------------------------------
     def _ir(self, t, nuevo, causa):
@@ -44,6 +53,17 @@ class Supervisor:
         if self.estado == Estado.MODO_SEGURO:
             self._ir(t, Estado.DETENIDO, "reconocimiento del operador")
 
+    def rearmar(self, t, causa="rearme desde el tablero"):
+        """Sale de MODO_SEGURO (o DETENIDO) y repite el arranque: INICIALIZACIÓN -> HOMING ->
+        BÚSQUEDA. Devuelve True si había algo que rearmar."""
+        if self.estado not in (Estado.MODO_SEGURO, Estado.DETENIDO):
+            return False
+        self.falla, self._t_sano = None, None
+        self.validos_seguidos, self.t_ult_valida = 0, None
+        self._t_rearme = t
+        self._ir(t, Estado.INICIALIZACION, causa)
+        return True
+
     def reiniciar_busqueda(self, t, causa):
         """Vuelve a BÚSQUEDA desde SEGUIMIENTO o PÉRDIDA y exige adquirir de nuevo.
         Se usa al cambiar de objetivo desde el tablero: lo que se venía siguiendo ya no vale."""
@@ -53,11 +73,27 @@ class Supervisor:
             self._ir(t, Estado.BUSQUEDA, causa)
 
     # ------------------------------------------------------------------
-    def paso(self, t, det_valida, confianza, enlace_ok=True, homing_ok=True, falla_actuador=False):
+    def paso(self, t, det_valida, confianza, enlace_ok=True, homing_ok=True, falla_actuador=False,
+             rearme_auto=False):
         """Una evaluación. t [s]; det_valida: bool; confianza: EP-5 en [0,1].
         homing_ok: el ESP32 entrega posición absoluta válida (AS5600 con telemetría).
-        falla_actuador: el ESP32 reporta FALLA (supervisor local, CS-9)."""
+        falla_actuador: el ESP32 reporta FALLA (supervisor local, CS-9).
+        rearme_auto: se permite salir solo de MODO_SEGURO (motores cortados)."""
         ps = self.ps
+        if self.estado == Estado.MODO_SEGURO and rearme_auto and enlace_ok and not falla_actuador:
+            if self._t_sano is None:
+                self._t_sano = t
+            elif t - self._t_sano >= getattr(ps, "t_rearme_auto_s", 1.0):
+                self.rearmar(t, "causa despejada con los motores cortados")
+        else:
+            self._t_sano = None
+        #* Tras un rearme, el ESP32 tarda unos milisegundos en informar su estado nuevo. Durante
+        #* t_gracia_rearme_s no se juzga con la telemetría vieja: si no, el rearme caería de
+        #* inmediato otra vez en MODO_SEGURO y habría que pedirlo dos veces.
+        if self.estado == Estado.INICIALIZACION and self._t_rearme is not None:
+            if t - self._t_rearme < getattr(ps, "t_gracia_rearme_s", 0.3):
+                return self.estado
+            self._t_rearme = None
         if det_valida:
             self.validos_seguidos += 1
             self.t_ult_valida = t

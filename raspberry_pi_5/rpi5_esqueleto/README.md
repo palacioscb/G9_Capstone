@@ -92,7 +92,7 @@ python3 main.py --fuente camara --enlace trama --duracion 30 --habilitar      # 
 ```
 
 - En el paso 1, si el láser no se detecta, revisar `pico` y `motivo` en el CSV. Si el pico de V queda bajo 170, subir `ganancias_color[0]` (rojo) o bajar `exposicion_us`.
-- El paso 2 sirve para comprobar que la telemetría llega y que `pan_med`/`tilt_med` se mueven al girar los ejes a mano. **Sin `--habilitar` la RPi nunca mueve los motores:** manda "deshabilitar" en vez de consignas, aunque el ESP32 haya quedado energizado de una corrida anterior.
+- El paso 2 sirve para comprobar que la telemetría llega y que `pan_med`/`tilt_med` se mueven al girar los ejes a mano. **Sin `--habilitar` los motores parten cortados:** la RPi manda "deshabilitar" en vez de consignas, aunque el ESP32 haya quedado energizado de una corrida anterior. Desde el 19-11 se pueden habilitar después desde el tablero (sección 4b).
 - La pose se lee en el instante de la **fila** donde está el objetivo (persiana rodante del IMX219; `t_lectura_ms` en `parametros.py` es una estimación por medir).
 - El procedimiento de signos y cero del ESP32 está en `esp_32/esp32_pan_tilt/README.md`, y se hace **antes** del paso 3.
 
@@ -180,10 +180,45 @@ Deja en `docs/figuras/` la tabla (`comp_ganancias_ff.csv` y `.md`) y las figuras
 - **Detección por forma (revisión del 18-11):** el detector `avion` ya no usa el color: reconoce la silueta en el plano Y (contraste local y descriptores de Fourier del contorno). `ovni` busca una figura circular con el mismo método. Requieren OpenCV. Las vistas del avión se aprenden del avión real y quedan en `formas.json` (hoy: `avion_arriba` y `avion_lado`); para rehacer una: `python3 herramientas/aprender_forma.py --nombre avion_arriba --camara --exposicion 8000 --ganancia 4`. El avión no se simula: se prueba con cuadros reales (`grabar_cuadros.py` y `reproducir_forma.py`). Método, resultados y condiciones de operación: `docs/deteccion_por_forma.md`. Flujo de trabajo completo: sección 5.
 - **Predictor (revisión del 17-11):** el tablero tiene tres controles más en el grupo Predicción: "Reinicio sin pasar por PÉRDIDA", "Gating conjunto (pan y tilt)" y "Oclusión: tope de la aceleración" (apagado, valor 0). Apagar los dos primeros deja el predictor como antes. El CSV agrega `gating_d` (innovación en veces el umbral; mayor que 1 es rechazo), `sigma_pan` y `sigma_tilt`, y `est_u` / `est_w` pueden valer `reinicio`. `analizar_registro.py` los resume en su punto 5, para ajustar el piso del gating con datos. Detalle y mediciones: `docs/prediccion_rls.pdf`, sección 6.1.
 - **Riesgo asumido:** cualquier equipo conectado a la misma red puede cambiar estos valores, y con `--habilitar` un cambio de objetivo o de umbral termina moviendo la plataforma.
-  - No existe ruta para habilitar motores, mandar referencias o comandos al ESP32, ni para cambiar límites o ganancias del PI.
+  - Desde el 19-11-2026 el tablero también manda al ESP32 (sección 4b): habilitar y cortar motores, ganancias, cero y referencia de prueba. `--sin-mando` lo quita.
   - `--monitor-solo-lectura` deja el tablero como antes.
   - Si el objetivo nuevo no está en cuadro, la plataforma se queda quieta: el patrón de búsqueda sigue pendiente.
 - **Prueba en el PC:** `python main.py --enlace simulado --lampara --monitor --duracion 60`. Con fuente sintética no aparece el grupo Cámara.
+
+## 4b. Un solo `main.py`: mando de la plataforma y experimentos desde el tablero (19-11)
+
+**Para qué:** ejecutar `main.py` una vez y probar todo desde el navegador, sin entrar a la consola del ESP32 ni volver a ejecutar.
+
+```bash
+python3 main.py        # en la RPi: cámara + ESP32 + tablero (http://g9-cap.local:8000), sin fin, motores cortados
+```
+
+- **Valores por defecto.** En una máquina con `picamera2` (la RPi), `main.py` a secas usa la cámara, el ESP32 (`--enlace trama`), el tablero y no termina solo. En el PC sigue siendo la fuente sintética sin actuadores. Todo lo escrito a mano manda: `--enlace nulo`, `--sin-monitor`, `--duracion 20`, `--detector avion`, `--habilitar`.
+- **Si no hay puerto serie**, sigue sólo con cámara y detección y lo avisa. Si el ESP32 está apagado, parte igual y se conecta cuando aparece.
+
+**Tarjeta «Plataforma (ESP32)» del tablero:**
+
+| Control | Qué hace | Cómo viaja |
+|---|---|---|
+| Cortar motores / Habilitar motores | deshabilita o energiza los drivers; habilitar además rearma | comando binario, inmediato |
+| Rearmar | sale de MODO_SEGURO y repite el arranque | comando binario |
+| Retener aquí | mantiene la posición actual como referencia manual | consigna |
+| Referencia de prueba (pan, tilt) + Ir | la plataforma va a ese ángulo y deja de seguir al objetivo; «Volver al seguimiento» lo retoma | consigna, recortada a los límites |
+| Ganancias del PI + Aplicar | `k <eje> <Kp> <Ki>` del firmware; no quedan guardadas en el ESP32 | consola (pausa de ~2 s) |
+| Estado de sensores | `p`: ángulos, lectura cruda, imán, errores I2C, signos, ganancias | consola |
+| Prueba de signos pan / tilt | `t <eje>`; requiere motores habilitados | consola (pausa de ~4 s) |
+| Fijar cero aquí | corta los motores y ejecuta `z`; queda guardado en el ESP32 | consola |
+| Grabar experimento | guarda las filas en `registros/exp_<etiqueta>_<fecha>.csv` hasta «Detener»; se baja desde el mismo tablero | — |
+
+- **Ventana de consola.** El firmware ignora su consola de texto mientras el enlace binario está activo (1 s desde la última trama). Para esos comandos la RPi calla 1,15 s, escribe la línea, espera la respuesta y retoma; el ESP32 queda reteniendo mientras tanto. La respuesta aparece en «Mensajes del ESP32». El firmware no se modificó.
+- **MODO_SEGURO sin reiniciar.** Con los motores cortados se sale solo cuando el enlace lleva 1 s sano (por ejemplo, al encender o reiniciar el ESP32). Con los motores habilitados hace falta «Rearmar» (o «Habilitar motores»); si la causa sigue presente, vuelve a MODO_SEGURO y la bitácora dice por qué.
+- **Registro.** El CSV trae además `kp_pan`, `ki_pan`, `kp_tilt`, `ki_tilt`, `manual` y `experimento`.
+- **Comparar ganancias y feedforward con lo simulado.** Por cada caso: ganancias, casilla «Feedforward», etiqueta, «Grabar», mover el objetivo unos 40 s, «Detener». Luego, en el PC:
+  ```bash
+  python3 herramientas/comparar_ganancias_ff.py --reusar --lab registros/exp_*.csv
+  ```
+  El grupo (A o B) se reconoce por las ganancias del CSV y el caso por la columna `ff`. Salen la tabla y las figuras con las filas «simulado» y «medido».
+- **Riesgo asumido (decisión del equipo):** cualquier equipo conectado al hotspot puede habilitar y mover la plataforma. `--sin-mando` quita estas órdenes y `--monitor-solo-lectura` toda escritura.
 
 ## 5. Detección del avión por forma: flujo de trabajo (revisión del 18-11)
 

@@ -110,6 +110,17 @@ pre { margin: 0; font-size: 12px; white-space: pre-wrap; color: var(--ink-2); ma
 .aj-row input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--s1); }
 .aj-row .ay { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
 .aj-row.pend label::after { content: " · enviando…"; color: var(--warning); }
+/* Mando de la plataforma (ESP32) */
+.md-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px 28px; margin: 8px 0; }
+.md-g h3 { font-size: 13px; margin: 0 0 8px; font-weight: 650; }
+.md-fila { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-bottom: 8px; font-size: 13px; color: var(--ink-2); }
+.md-fila b { color: var(--ink); min-width: 28px; }
+.md-fila input { background: var(--surface-2); color: var(--ink); border: 1px solid var(--ring); border-radius: 6px;
+  padding: 4px 6px; font: inherit; font-size: 13px; font-variant-numeric: tabular-nums; }
+.md-fila input[type=number] { width: 76px; text-align: right; }
+.md-fila input[type=text] { width: 170px; }
+.btn.pri { background: var(--s1); color: #fff; border-color: var(--s1); }
+.btn.paro { background: var(--critical); color: #fff; border-color: var(--critical); font-weight: 650; }
 #aj-nombre { width: 120px; }
 #aj-hist { max-height: 86px; }
 </style>
@@ -224,6 +235,47 @@ pre { margin: 0; font-size: 12px; white-space: pre-wrap; color: var(--ink-2); ma
     <div class="sub num" id="aj-cam"></div>
     <pre id="aj-hist"></pre>
     <div class="sub" style="margin-top:6px">Cada cambio se valida en la RPi y el lazo lo aplica en el cuadro siguiente, sin reiniciar main.py. Cambiar de detector aplica el perfil de ese objetivo (cámara, umbrales y predictor) y vuelve a BÚSQUEDA: la plataforma retiene hasta adquirir el objetivo nuevo. <b>Cualquier equipo conectado a esta red puede cambiar estos valores.</b></div>
+  </section>
+
+  <section class="card" id="md-card" hidden>
+    <div class="charts-head">
+      <h2>Plataforma (ESP32)</h2>
+      <button class="btn paro" data-md="deshabilitar" title="Los ejes quedan sueltos y la RPi deja de mandar consignas">Cortar motores</button>
+      <button class="btn pri" data-md="habilitar" title="Energiza los drivers. Si el ESP32 estaba en falla, la rearma si la causa ya no está">Habilitar motores</button>
+      <button class="btn" data-md="rearmar" title="Sale de MODO_SEGURO y repite el arranque, sin volver a ejecutar main.py">Rearmar</button>
+      <button class="btn" data-md="retener" title="Mantiene la posición actual como referencia manual">Retener aquí</button>
+      <span class="sub" id="md-cons"></span>
+      <span class="sep"></span>
+      <span class="sub num" id="md-msg">—</span>
+    </div>
+    <div class="md-grid">
+      <div class="md-g"><h3>Referencia de prueba</h3>
+        <div class="md-fila"><label for="md-rpan">pan [°]</label><input id="md-rpan" type="number" step="0.5" value="0">
+          <label for="md-rtilt">tilt [°]</label><input id="md-rtilt" type="number" step="0.5" value="0">
+          <button class="btn" id="md-ir" title="La plataforma va a ese ángulo y deja de seguir al objetivo">Ir</button></div>
+        <div class="md-fila"><button class="btn" data-md="seguimiento">Volver al seguimiento</button><span id="md-manual">—</span></div>
+      </div>
+      <div class="md-g"><h3>Ganancias del PI</h3>
+        <div class="md-fila"><b>pan</b><label for="md-kp-pan">Kp</label><input id="md-kp-pan" type="number" step="0.25" min="0">
+          <label for="md-ki-pan">Ki</label><input id="md-ki-pan" type="number" step="0.25" min="0"><button class="btn" data-gan="pan">Aplicar</button></div>
+        <div class="md-fila"><b>tilt</b><label for="md-kp-tilt">Kp</label><input id="md-kp-tilt" type="number" step="0.5" min="0">
+          <label for="md-ki-tilt">Ki</label><input id="md-ki-tilt" type="number" step="1" min="0"><button class="btn" data-gan="tilt">Aplicar</button></div>
+        <div class="sub num" id="md-gan">Vigentes en el ESP32: —</div>
+      </div>
+      <div class="md-g"><h3>Sensores y calibración</h3>
+        <div class="md-fila"><button class="btn" data-md="estado" title="Comando p del ESP32: ángulos, lectura cruda, imán, errores I2C, signos y ganancias">Estado de sensores</button></div>
+        <div class="md-fila">Prueba de signos:<button class="btn" data-signos="pan">pan</button><button class="btn" data-signos="tilt">tilt</button></div>
+        <div class="md-fila"><button class="btn" id="md-cero" title="Corta los motores y fija θ = 0 en la posición actual. Queda guardado en el ESP32">Fijar cero aquí</button></div>
+      </div>
+      <div class="md-g"><h3>Grabar experimento</h3>
+        <div class="md-fila"><input id="md-etq" type="text" maxlength="32" placeholder="etiqueta, p. ej. A_sin_ff" aria-label="Etiqueta de la grabación">
+          <button class="btn pri" id="md-grabar">Grabar</button><button class="btn" data-md="detener_grabacion">Detener</button></div>
+        <div class="sub num" id="md-grab">Sin grabación en curso.</div>
+        <div class="exp" id="md-grabs" style="margin-top:8px"></div>
+      </div>
+    </div>
+    <pre id="md-hist"></pre>
+    <div class="sub" style="margin-top:6px">Estado, cero, prueba de signos y ganancias usan la consola del ESP32: el enlace se pausa cerca de 2 s (4 s en la prueba de signos) y sigue solo; la respuesta aparece en «Mensajes del ESP32». Las ganancias no quedan guardadas en el ESP32: al reiniciarlo vuelven las de config.h. <b>Cualquier equipo conectado a esta red puede mover la plataforma.</b></div>
   </section>
 
   <section class="card">
@@ -509,6 +561,69 @@ function tarjetas() {
   $("txt").textContent = (e.textos && e.textos.length) ? e.textos.join("\n") : "—";
 }
 
+// ---- mando de la plataforma (POST /mando) --------------------------------------------------------
+// Cada botón manda una orden; la RPi la valida y el lazo la ejecuta en el cuadro siguiente.
+// Lo que se muestra (motores, referencia manual, ganancias, grabación) es lo VIGENTE que informa el lazo.
+function mdMsg(t, s) { const m = $("md-msg"); m.textContent = t; m.style.color = s ? `var(--${s})` : ""; }
+function mdEnviar(cuerpo) {
+  return fetch("/mando", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(cuerpo)})
+    .then(r => r.json()).then(j => { mdMsg((j.ok ? "✓ " : "✕ ") + (j.detalle || j.error || ""), j.ok ? "" : "critical"); return j; })
+    .catch(() => mdMsg("✕ Sin respuesta de la RPi", "critical"));
+}
+const mdNum = id => { const v = parseFloat($(id).value); return Number.isFinite(v) ? v : null; };
+function armarMando() {
+  $("md-card").hidden = false;
+  $("md-card").addEventListener("click", ev => {
+    const b = ev.target.closest("button"); if (!b) return;
+    if (b.dataset.md) mdEnviar({accion: b.dataset.md});
+    else if (b.dataset.signos) mdEnviar({accion: "prueba_signos", eje: b.dataset.signos});
+    else if (b.dataset.gan) {
+      const eje = b.dataset.gan, kp = mdNum("md-kp-" + eje), ki = mdNum("md-ki-" + eje);
+      if (kp === null || ki === null) mdMsg("Escribe Kp y Ki.", "warning"); else mdEnviar({accion: "ganancias", eje, kp, ki});
+    } else if (b.id === "md-ir") {
+      const pan = mdNum("md-rpan"), tilt = mdNum("md-rtilt");
+      if (pan === null || tilt === null) mdMsg("Escribe pan y tilt.", "warning"); else mdEnviar({accion: "referencia", pan, tilt});
+    } else if (b.id === "md-cero") {
+      if (window.confirm("¿Fijar el cero en la posición actual? Se cortan los motores y el cero queda guardado en el ESP32.")) mdEnviar({accion: "cero"});
+    } else if (b.id === "md-grabar") {
+      const etiqueta = $("md-etq").value.trim();
+      if (!etiqueta) mdMsg("Escribe una etiqueta para la grabación.", "warning"); else mdEnviar({accion: "grabar", etiqueta});
+    }
+  });
+}
+let mdGanTxt = null, mdGrabsTxt = null, mdLimPuesto = false;
+function sincronizarMando(m) {
+  if (!m || $("md-card").hidden) return;
+  $("t-mot").textContent = m.motores ? "Motores HABILITADOS" : "Motores cortados"; pill("p-mot", m.motores ? "serious" : "neutral");
+  $("m-mot").textContent = m.motores ? "habilitados" : "cortados";
+  $("md-cons").textContent = m.consola ? "Consola del ESP32 en uso: enlace en pausa…" : ""; $("md-cons").style.color = "var(--warning)";
+  $("md-manual").textContent = m.manual ? `MANUAL: pan ${m.manual[0].toFixed(2)}°, tilt ${m.manual[1].toFixed(2)}°` : "siguiendo al objetivo";
+  $("md-manual").style.color = m.manual ? "var(--warning)" : "";
+  if (!mdLimPuesto && m.lim) {
+    mdLimPuesto = true;
+    $("md-rpan").min = m.lim.pan[0]; $("md-rpan").max = m.lim.pan[1]; $("md-rtilt").min = m.lim.tilt[0]; $("md-rtilt").max = m.lim.tilt[1];
+  }
+  const g = m.gan || {}, gTxt = JSON.stringify(g);
+  if (gTxt !== mdGanTxt) {                  // sólo cuando cambian: no pisa lo que se está escribiendo
+    mdGanTxt = gTxt;
+    for (const e of ["pan", "tilt"]) if (g[e]) { $("md-kp-" + e).value = g[e][0]; $("md-ki-" + e).value = g[e][1]; }
+    $("md-gan").textContent = "Vigentes en el ESP32: " + (["pan", "tilt"].filter(e => g[e]).map(e => `${e} Kp ${g[e][0]} · Ki ${g[e][1]}`).join("  |  ") || "aún no leídas (botón «Estado de sensores»)");
+  }
+  const gr = m.grab || {};
+  $("md-grab").textContent = gr.activa ? `● Grabando «${gr.etiqueta}»: ${gr.filas} filas (${(gr.filas / (CFG.fps || 80)).toFixed(0)} s)` : "Sin grabación en curso.";
+  $("md-grab").style.color = gr.activa ? "var(--critical)" : "";
+  const lista = m.grabs || [], lTxt = JSON.stringify(lista);
+  if (lTxt !== mdGrabsTxt) {
+    mdGrabsTxt = lTxt;
+    const cont = $("md-grabs"); cont.textContent = "";
+    for (const [nombre, filas, etq] of lista.slice().reverse()) {
+      const a = document.createElement("a"); a.className = "btn"; a.href = "/" + nombre;
+      a.textContent = `${etq} · ${(filas / (CFG.fps || 80)).toFixed(0)} s (CSV)`; a.title = nombre; cont.appendChild(a);
+    }
+  }
+  $("md-hist").textContent = (m.hist || []).slice().reverse().map(h => `${h[0]}  ${h[2]}`).join("\n");
+}
+
 // ---- ajustes en vivo (POST /ajustes) -------------------------------------------------------------
 // El navegador sólo PIDE: la RPi valida tipo y rango, y el lazo aplica en el cuadro siguiente.
 // Los controles muestran siempre el valor VIGENTE que informa el lazo (EST.aj.val).
@@ -642,7 +757,7 @@ function bucle() {
     else if (dt < 1000) { $("t-con").textContent = pausado ? "En vivo (gráficos en pausa)" : "En vivo"; pill("p-con", "good"); }
     else { $("t-con").textContent = `Sin datos hace ${(dt / 1000).toFixed(0)} s`; pill("p-con", "warning"); }
   }
-  if (sucio && D) { sucio = false; for (const c of CHARTS) dibujar(c); tarjetas(); dibujarImagen(); sincronizarAjustes(EST.aj); }
+  if (sucio && D) { sucio = false; for (const c of CHARTS) dibujar(c); tarjetas(); dibujarImagen(); sincronizarAjustes(EST.aj); sincronizarMando(EST.mando); }
   requestAnimationFrame(bucle);
 }
 
@@ -658,6 +773,7 @@ fetch("/config").then(r => r.json()).then(cfg => {
   else setInterval(pedirImagen, 1000 / CFG.imagen_hz);
   armarGraficos(); conectar(); requestAnimationFrame(bucle);
   if (CFG.ajustable) fetch("/ajustes").then(r => r.json()).then(armarAjustes).catch(() => {});
+  if (CFG.mando) armarMando();
 });
 $("win").addEventListener("click", ev => {
   const b = ev.target.closest("button"); if (!b) return;

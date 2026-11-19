@@ -15,9 +15,10 @@ Se aplica con un clic y se puede regrabar con lo que esté funcionando; queda en
 Elegir otro DETECTOR en el tablero aplica también el perfil de ese objetivo (perfil_de): así no
 hay que volver a poner a mano la exposición, la ganancia y los umbrales en cada cambio.
 """
-#! Este módulo es la ÚNICA puerta de escritura del tablero. Lo que no esté declarado como
-#! Ajuste no se puede cambiar por la red: no hay clave para habilitar motores, mandar
-#! referencias ni comandos al ESP32, ni para tocar límites de recorrido o ganancias del PI.
+#! Este módulo es la puerta de escritura de los PARÁMETROS del tablero: lo que no esté declarado
+#! como Ajuste no se puede cambiar aquí. Las órdenes a la plataforma (habilitar y cortar motores,
+#! ganancias del PI, cero, referencia de prueba) van aparte, por pt/mando.py (desde el 19-11-2026),
+#! con su propia lista de acciones validadas. Los límites de recorrido no se cambian por la red.
 import collections
 import json
 import math

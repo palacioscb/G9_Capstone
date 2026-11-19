@@ -11,20 +11,23 @@ feedforward para cada grupo de ganancias del PI, en simulación y (después) en 
        python3 herramientas/comparar_ganancias_ff.py
        python3 herramientas/comparar_ganancias_ff.py --reusar      # no repite lo ya simulado
 
-2) LABORATORIO. Por cada grupo: fijar las ganancias en la consola del ESP32 (k pan 5 6.25,
-   k tilt 20 100), correr main.py con --registro en una carpeta propia, y con y sin
-   feedforward (dos corridas, o una sola marcando la casilla del tablero a mitad de camino).
-   Luego:
-       python3 herramientas/comparar_ganancias_ff.py --reusar --detector avion \\
-               --lab-a registros/lab_A/*.csv --lab-b registros/lab_B/*.csv
+2) LABORATORIO (desde el 19-11-2026, todo desde el tablero y con main.py corriendo una vez).
+   Por cada caso: poner las ganancias (tarjeta "Plataforma": Ganancias del PI), marcar o
+   desmarcar "Feedforward" en los ajustes, escribir una etiqueta (A_sin_ff, A_con_ff, B_sin_ff,
+   B_con_ff), "Grabar", mover el objetivo unos 40 s y "Detener". Cada grabación queda en
+   registros/exp_<etiqueta>_<fecha>.csv y se baja desde el mismo tablero. Luego:
+       python3 herramientas/comparar_ganancias_ff.py --reusar --lab registros/exp_*.csv
+   El grupo (A o B) se reconoce por las ganancias anotadas en cada fila del CSV, y el caso con o
+   sin feedforward por la columna ff: da lo mismo cuántos archivos sean o cómo se llamen.
    La tabla y las figuras quedan con las filas "simulado" y "medido" lado a lado.
+   (Con registros anteriores, sin las columnas de ganancias: --lab-a ... y --lab-b ...)
 
 Salidas (carpeta docs/figuras del repositorio, o la que indique --salida):
     comp_ganancias_ff.csv           todos los números, una fila por caso (para planilla)
     comp_ganancias_ff.md            tabla lista para pegar en la presentación o el informe
     comp_ganancias_ff_barras.*      figura: error de centrado y atraso, por grupo y feedforward
     comp_ganancias_ff_traza_sim.*   figura: error de centrado en el tiempo (simulado)
-    comp_ganancias_ff_traza_lab.*   ídem con lo medido, si se entregó --lab-a / --lab-b
+    comp_ganancias_ff_traza_lab.*   ídem con lo medido, si se entregó --lab (o --lab-a / --lab-b)
 Los CSV crudos de la simulación quedan en registros/comp_ganancias/<grupo>_<sin|con>_ff/.
 """
 #? La planta simulada es el modelo ideal de pid_t_2 con ζ = 0,05 SUPUESTO (pt/modelo_eje.py).
@@ -88,9 +91,23 @@ def simular(grupo, ff, a):
 # ---------------------------------------------------------------------------
 #* 2. Análisis: mismo cálculo que analizar_registro.py (tramos de feedforward constante)
 # ---------------------------------------------------------------------------
+def grupo_de(fila, tol=0.02):
+    """Grupo de ganancias (A, B...) de una fila del CSV, por sus columnas kp_pan..ki_tilt
+    (registros desde el 19-11-2026). None si no las trae o no calzan con ningún grupo."""
+    try:
+        g = [float(fila[c]) for c in ("kp_pan", "ki_pan", "kp_tilt", "ki_tilt")]
+    except (KeyError, TypeError, ValueError):
+        return None
+    for nombre, d in GRUPOS.items():
+        if all(abs(a - b) <= tol * max(1.0, abs(b)) for a, b in zip(g, d["pan"] + d["tilt"])):
+            return nombre
+    return None
+
+
 def tramos(ruta, detector=None, min_tramo=3.0, descartar=0.0):
-    """Tramos del CSV con detector y feedforward constantes: [{'res': resumen, 't', 'dpan', 'dtilt'}].
-    De cada tramo se descartan los primeros `descartar` segundos (transitorio)."""
+    """Tramos del CSV con detector, feedforward y ganancias constantes:
+    [{'res': resumen, 't', 'dpan', 'dtilt', 'grupo'}]. De cada tramo se descartan los primeros
+    `descartar` segundos (transitorio). Los tramos con referencia manual no son seguimiento: se omiten."""
     with open(ruta, newline="") as f:
         filas = list(csv.DictReader(f))
     if len(filas) < 20:
@@ -101,12 +118,15 @@ def tramos(ruta, detector=None, min_tramo=3.0, descartar=0.0):
         i0 = int(np.searchsorted(t, t[i0] + descartar))
         if (detector and det != detector) or i1 - i0 < 20 or t[i1 - 1] - t[i0] < min_tramo:
             continue
+        if filas[i0].get("manual") == "1":
+            continue
         ff, tt = filas[i0:i1], t[i0:i1]
         res = ar.analizar_tramo(ff, tt, os.path.basename(ruta), detalle=False)
         sel = np.array([f.get("estado") == "SEGUIMIENTO" and ar.num(f, "valido") == 1 for f in ff])
         serie = lambda c: np.where(sel, np.array([ar.num(f, c) for f in ff]), np.nan)
         salida.append({"res": res, "t": tt, "dpan": serie("dpan_deg"), "dtilt": serie("dtilt_deg"),
-                       "archivo": ruta})
+                       "archivo": ruta, "grupo": grupo_de(filas[i0]),
+                       "gan": " ".join(str(filas[i0].get(c, "?")) for c in ("kp_pan", "ki_pan", "kp_tilt", "ki_tilt"))})
     return salida
 
 
@@ -137,6 +157,17 @@ def reunir(a):
                 print(f"  aviso: {ruta} no tiene tramos útiles" + (f" con detector {a.detector}" if a.detector else ""))
             for tr in encontrados:
                 agregar("medido", grupo, tr)
+    #* --lab: el grupo sale de las ganancias anotadas en el propio CSV.
+    for ruta in a.lab or []:
+        encontrados = tramos(ruta, a.detector, a.min_tramo, a.descartar_lab)
+        if not encontrados:
+            print(f"  aviso: {ruta} no tiene tramos útiles" + (f" con detector {a.detector}" if a.detector else ""))
+        for tr in encontrados:
+            if tr["grupo"] is None:
+                print(f"  aviso: {os.path.basename(ruta)}: tramo de {tr['res']['dur']:.0f} s con ganancias ({tr['gan']}) que no "
+                      f"son de ningún grupo ({', '.join(GRUPOS)}), o sin esas columnas. Se omite (usar --lab-a / --lab-b).")
+                continue
+            agregar("medido", tr["grupo"], tr)
     return casos
 
 
@@ -205,7 +236,8 @@ def escribir_tabla(casos, salida, a):
 #* 4. Figuras
 # ---------------------------------------------------------------------------
 TINTA, TINTA2, GRILLA, EJE = "#0b0b0b", "#52514e", "#e1e0d9", "#c3c2b7"
-SIN, CON = "#1baf7a", "#eb6834"          # mismas identidades que en docs/feedforward_velocidad.pdf
+#* Paleta de la presentación (18-11-2026): escala de azules, la misma de docs/figuras/figuras_feedforward.py.
+SIN, CON = "#86b6ef", "#0d366b"          # sin feedforward = celeste; con feedforward = azul marino
 ROTULO = {"simulado": "Simulado", "medido": "Medido en laboratorio"}
 
 
@@ -281,7 +313,7 @@ def figuras(casos, salida):
                 for ff, color in ((0, SIN), (1, CON)):
                     tr = casos.get((origen, g, ff))
                     if tr:
-                        ax.plot(tr["t"], tr[serie], color=color, linewidth=1.3)
+                        ax.plot(tr["t"], tr[serie], color=color, linewidth=1.5)
                 ax.axhline(0, color=EJE, linewidth=0.8)
                 ax.set_title(f"Grupo {g}: {eje}, {gan(g, eje)}", loc="left", color=TINTA)
                 ax.yaxis.set_major_formatter(formato)
@@ -303,7 +335,9 @@ def main():
     ap.add_argument("--descartar-lab", type=float, default=2.0,
                     help="en lo medido, segundos que se descartan al inicio de cada tramo (por defecto 2)")
     ap.add_argument("--reusar", action="store_true", help="no repetir las simulaciones que ya tienen CSV")
-    ap.add_argument("--sin-simular", action="store_true", help="sólo lo medido (--lab-a / --lab-b)")
+    ap.add_argument("--sin-simular", action="store_true", help="sólo lo medido (--lab, --lab-a, --lab-b)")
+    ap.add_argument("--lab", nargs="+", metavar="CSV",
+                    help="grabaciones del laboratorio (exp_*.csv del tablero): el grupo se reconoce por las ganancias del CSV")
     ap.add_argument("--lab-a", nargs="+", metavar="CSV", help="registros del laboratorio con las ganancias del grupo A")
     ap.add_argument("--lab-b", nargs="+", metavar="CSV", help="registros del laboratorio con las ganancias del grupo B")
     ap.add_argument("--detector", help="en lo medido, usar sólo los tramos con este detector (rojo, luz, avion, brillo)")

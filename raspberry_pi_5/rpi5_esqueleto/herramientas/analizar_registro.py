@@ -74,11 +74,14 @@ def ff_de_la_fila(fila):
 
 
 def partir_en_tramos(filas):
-    """[(i0, i1, detector, ff)], con i1 exclusivo: tramos seguidos con el mismo detector y feedforward."""
+    """[(i0, i1, detector, ff)], con i1 exclusivo: tramos seguidos con el mismo detector y feedforward.
+    También se corta donde cambian las ganancias del PI, la referencia manual o el experimento
+    (columnas del 19-11-2026; en registros anteriores no existen y no cortan)."""
     tramos, i0 = [], 0
     clave = lambda f: (f.get("detector", ""), ff_de_la_fila(f))
+    _corte = lambda f: clave(f) + tuple(f.get(c, "") for c in ("kp_pan", "ki_pan", "kp_tilt", "ki_tilt", "manual", "experimento"))
     for i in range(1, len(filas) + 1):
-        if i == len(filas) or clave(filas[i]) != clave(filas[i0]):
+        if i == len(filas) or _corte(filas[i]) != _corte(filas[i0]):
             tramos.append((i0, i) + clave(filas[i0]))
             i0 = i
     return tramos

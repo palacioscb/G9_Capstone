@@ -940,6 +940,313 @@ def test_detector_avion_rojo():
     assert perfil_de(aj.perfiles, "avion") == "avion"                     # el del avión por forma no cambia
 
 
+# ---------------------------------------------------------------------------
+# Mando desde el tablero (19-11-2026): ESP32 de mentira que respeta las reglas del firmware
+# ---------------------------------------------------------------------------
+class _ESP32Falso:
+    """Puerto serie que se comporta como el firmware esp32_pan_tilt en lo que importa al mando:
+    telemetría sólo mientras recibe tramas, consola de texto IGNORADA con el enlace activo
+    (ENLACE_ACTIVO_MS), watchdog de consignas y los comandos p, k, z y t."""
+
+    def __init__(self, activo_s=0.25):
+        import threading
+        self.activo_s = activo_s
+        self.estado, self.fallas = 0, 0
+        self.gan = {"pan": [3.0, 2.25], "tilt": [10.0, 25.0]}
+        self.t_trama, self.t_consigna, self.t_tel = None, 0.0, 0.0
+        self.rx, self.tx, self.linea = bytearray(), bytearray(), bytearray()
+        self.tramas, self.aceptadas, self.ignoradas = [], [], []
+        self.ref, self.seq = [0.0, 0.0], 0
+        self._lock = threading.Lock()
+
+    def _activo(self):
+        import time as _t
+        return self.t_trama is not None and (_t.monotonic() - self.t_trama) < self.activo_s
+
+    def _generar(self):
+        import time as _t
+        ahora = _t.monotonic()
+        with self._lock:
+            if self.estado == 2 and ahora - self.t_consigna > 0.1:
+                self.estado = 1                              # watchdog: sin consigna -> RETENCION
+            if self._activo() and ahora - self.t_tel >= 0.005:
+                self.t_tel, self.seq = ahora, (self.seq + 1) & 0xFF
+                self.tx += trama_telemetria(self.seq, Telemetria(int(ahora * 1e6) & 0xFFFFFFFF, self.ref[0], self.ref[1],
+                                                                 self.ref[0], self.ref[1], 0, 0, self.estado, self.fallas, 0))
+
+    @property
+    def in_waiting(self):
+        self._generar()
+        return len(self.tx)
+
+    def read(self, n):
+        import time as _t
+        self._generar()
+        with self._lock:
+            if self.tx:
+                out = bytes(self.tx[:n])
+                del self.tx[:n]
+                return out
+        _t.sleep(0.002)
+        return b""
+
+    def write(self, b):
+        import time as _t
+        with self._lock:
+            self.rx += b
+            while self.rx:
+                if self.rx[0] == 0xAA:
+                    seq, tipo, carga, resto = leer_trama(bytes(self.rx))
+                    if seq is None and len(resto) == len(self.rx):
+                        return
+                    self.rx = bytearray(resto)
+                    if seq is not None:
+                        self.t_trama = _t.monotonic()
+                        self.tramas.append((self.t_trama, tipo, carga))
+                        self._trama(tipo, carga)
+                    continue
+                c = self.rx.pop(0)
+                if c in (10, 13):
+                    if self.linea:
+                        texto = self.linea.decode()
+                        self.linea.clear()
+                        if self._activo():
+                            self.ignoradas.append(texto)          # el firmware la descarta
+                        else:
+                            self.aceptadas.append((_t.monotonic(), texto))
+                            self._texto(texto.split())
+                else:
+                    self.linea.append(c)
+
+    def _trama(self, tipo, carga):
+        import time as _t
+        from pt.enlace import CMD_RETENER
+        if tipo == TIPO_COMANDO:
+            if carga[0] == CMD_HABILITAR:
+                self.estado, self.fallas = 1, 0
+            elif carga[0] == CMD_DESHABILITAR:
+                self.estado = 0
+            elif carga[0] == CMD_RETENER and self.estado == 2:
+                self.estado = 1
+        elif tipo == TIPO_CONSIGNA_THETA and self.estado in (1, 2):
+            self.estado, self.t_consigna = 2, _t.monotonic()
+            self.ref = list(struct.unpack("<ffff", carga)[:2])
+
+    def _texto(self, p):
+        if p[0] == "p":
+            for eje in ("pan", "tilt"):
+                self.tx += (f"#  {eje:<4s} med=  +0.000 ref=  +0.000 w=  +0.00 pasos=  +0.000 raw=  10 cero=  10 "
+                            f"Kp={self.gan[eje][0]:.2f} Ki={self.gan[eje][1]:.2f} st=0x20 i2c_err=0 EN={int(self.estado in (1, 2))}\n").encode()
+        elif p[0] == "k":
+            self.gan[p[1]] = [float(p[2]), float(p[3])]
+            self.tx += f"# {p[1]}: Kp={float(p[2]):.3f} 1/s  Ki={float(p[3]):.3f} 1/s^2\n".encode()
+        elif p[0] == "z":
+            self.tx += (b"# cero fijado y GUARDADO\n" if self.estado == 0 else b"# z: primero 'e 0' (deshabilitado)\n")
+        elif p[0] == "t":
+            self.tx += (f"# prueba de signos {p[1]}: ordenado +3.00 deg | sensor +3.01 deg\n".encode() if self.estado == 1
+                        else b"# t: primero 'e 1' (estado RETENCION)\n")
+
+    def close(self):
+        pass
+
+
+def _esperar(cond, t_max=2.0):
+    import time as _t
+    fin = _t.monotonic() + t_max
+    while _t.monotonic() < fin:
+        if cond():
+            return True
+        _t.sleep(0.005)
+    return False
+
+
+def test_mando_ventana_de_consola_respeta_el_silencio():
+    """Ganancias por la consola del firmware: el enlace calla lo necesario, la línea se acepta y todo sigue solo."""
+    import time as _t
+    esp = _ESP32Falso(activo_s=0.25)
+    enl = EnlaceTrama(P.enlace, habilitar=False, puerto_serie=esp, silencio_consola_s=0.30)
+    try:
+        assert _esperar(lambda: enl.telemetria is not None) and enl.ok() and not enl.puede_mover
+        #* Escrita sin esperar, con el enlace activo, el firmware la descarta: por eso existe la ventana.
+        esp.write(b"k pan 9 9\n")
+        assert esp.ignoradas == ["k pan 9 9"] and esp.gan["pan"] == [3.0, 2.25]
+        ok, _ = enl.fijar_ganancias("pan", 5.0, 6.25)
+        assert ok and enl.consola_pendiente
+        siempre_ok, t0 = True, _t.monotonic()
+        while enl.consola_pendiente and _t.monotonic() - t0 < 3.0:
+            enl.enviar_consigna(0.0, 0.0)                    # lo que hace el lazo en cada cuadro
+            siempre_ok = siempre_ok and enl.ok()             # el silencio de la ventana no es "enlace caído"
+            _t.sleep(0.005)
+        assert not enl.consola_pendiente and not enl.en_consola and siempre_ok
+        (t_linea, linea), = esp.aceptadas
+        assert linea.startswith("k pan 5.0000 6.2500") and esp.gan["pan"] == [5.0, 6.25]
+        antes = [t for (t, _, _) in esp.tramas if t < t_linea]
+        assert t_linea - max(antes) >= 0.25                  # calló más que ENLACE_ACTIVO antes de escribir
+        assert _esperar(lambda: enl.ganancias.get("pan") == (5.0, 6.25))   # leída de la respuesta del firmware
+        assert any(x.startswith("> k pan") for x in enl.textos)
+        n = len(esp.tramas)
+        enl.enviar_consigna(0.0, 0.0)
+        _t.sleep(0.25)
+        enl.enviar_consigna(0.0, 0.0)
+        assert len(esp.tramas) > n and enl.ok()              # el enlace binario se retomó solo
+        assert not enl.consola("x\ny")[0] and not enl.consola("á")[0] and not enl.consola("")[0]
+        #! Dos líneas seguidas: entre una y otra el enlace binario se retoma. Sin esa pausa el ESP32
+        #! pasaría más de 5 s sin consignas y cortaría los drivers (DESHABILITAR_SIN_ENLACE_MS).
+        assert enl.consola("p", 0.2)[0] and enl.consola("e", 0.2)[0]
+        t0 = _t.monotonic()
+        while enl.consola_pendiente and _t.monotonic() - t0 < 5.0:
+            enl.enviar_consigna(0.0, 0.0)
+            _t.sleep(0.005)
+        (_, _), (t_p, l_p), (t_e, l_e) = esp.aceptadas
+        assert l_p == "p" and l_e == "e" and not esp.ignoradas[1:]
+        assert any(t_p < t < t_e for (t, _, _) in esp.tramas)   # hubo tramas entre las dos líneas
+    finally:
+        enl._corriendo = False
+
+
+def test_mando_habilitar_cortar_y_latido():
+    """Motores desde el tablero: habilitar manda consignas, cortar deja de mandarlas, y el latido mantiene la telemetría."""
+    import time as _t
+    esp = _ESP32Falso(activo_s=0.25)
+    enl = EnlaceTrama(P.enlace, habilitar=False, puerto_serie=esp, silencio_consola_s=0.30)
+    try:
+        assert _esperar(lambda: enl.telemetria is not None)
+        enl.enviar_consigna(5.0, 1.0)
+        assert not any(tp == TIPO_CONSIGNA_THETA for (_, tp, _) in esp.tramas) and esp.estado == 0   # observar: ni una consigna
+        assert enl.habilitar()[0] and enl.puede_mover
+        assert _esperar(lambda: enl.telemetria.estado == 1)
+        enl.enviar_consigna(5.0, 1.0)
+        assert _esperar(lambda: enl.telemetria.estado == 2) and esp.ref == [5.0, 1.0] and not enl.en_falla()
+        assert enl.deshabilitar()[0] and not enl.puede_mover
+        assert _esperar(lambda: enl.telemetria.estado == 0)
+        n = sum(tp == TIPO_CONSIGNA_THETA for (_, tp, _) in esp.tramas)
+        enl.enviar_consigna(9.0, 9.0)
+        assert sum(tp == TIPO_CONSIGNA_THETA for (_, tp, _) in esp.tramas) == n and not enl.en_falla()   # cortado no es falla
+        _t.sleep(0.45)                                       # nadie manda nada: el ESP32 deja de enviar telemetría
+        assert not enl.ok()
+        t0 = _t.monotonic()
+        while _t.monotonic() - t0 < 0.5:
+            enl.latido()
+            _t.sleep(0.01)
+        assert enl.ok() and esp.estado == 0                  # el latido la recupera sin mover nada
+    finally:
+        enl._corriendo = False
+
+
+def test_supervisor_sale_de_modo_seguro_sin_reiniciar():
+    """MODO_SEGURO: con motores cortados se rearma solo cuando el enlace vuelve; con motores, sólo a mano."""
+    Pp = Parametros()
+    sup = Supervisor(Pp.supervisor, con_actuadores=True)
+    for k in range(3):
+        sup.paso(0.01 * k, False, 0.0, enlace_ok=True, homing_ok=True)
+    assert sup.estado == Estado.BUSQUEDA
+    sup.paso(0.1, False, 0.0, enlace_ok=False)
+    assert sup.estado == Estado.MODO_SEGURO and sup.falla == "enlace caído"
+    sup.paso(0.2, False, 0.0, enlace_ok=True, rearme_auto=False)
+    sup.paso(5.0, False, 0.0, enlace_ok=True, rearme_auto=False)
+    assert sup.estado == Estado.MODO_SEGURO                  # motores habilitados: no sale solo (D21)
+    sup.paso(5.1, False, 0.0, enlace_ok=True, rearme_auto=True)
+    sup.paso(5.5, False, 0.0, enlace_ok=False, rearme_auto=True)   # volvió a caer: el plazo parte de nuevo
+    sup.paso(5.6, False, 0.0, enlace_ok=True, rearme_auto=True)
+    sup.paso(6.5, False, 0.0, enlace_ok=True, rearme_auto=True)
+    assert sup.estado == Estado.MODO_SEGURO
+    sup.paso(6.7, False, 0.0, enlace_ok=True, rearme_auto=True)    # 1 s seguido sano
+    assert sup.estado == Estado.INICIALIZACION and "causa despejada" in sup.bitacora[-1][3]
+    sup.paso(6.8, False, 0.0, enlace_ok=False, falla_actuador=True)   # plazo de gracia: aún no se juzga
+    assert sup.estado == Estado.INICIALIZACION
+    sup.paso(7.05, False, 0.0, enlace_ok=True, homing_ok=True)        # repite el arranque
+    sup.paso(7.06, False, 0.0, enlace_ok=True, homing_ok=True)
+    assert sup.estado == Estado.BUSQUEDA
+    #* Falla del ESP32 con motores: rearme manual. Si la causa sigue, vuelve a MODO_SEGURO y lo dice.
+    sup.paso(8.0, False, 0.0, enlace_ok=True, falla_actuador=True)
+    assert sup.estado == Estado.MODO_SEGURO and sup.rearmar(8.0)
+    sup.paso(8.1, False, 0.0, enlace_ok=True, falla_actuador=True)    # la telemetría todavía trae el estado viejo
+    assert sup.estado == Estado.INICIALIZACION
+    sup.paso(8.4, False, 0.0, enlace_ok=True, falla_actuador=True)    # pasó el plazo y la falla sigue
+    assert sup.estado == Estado.MODO_SEGURO and "ESP32" in sup.bitacora[-1][3]
+    assert sup.rearmar(8.5)
+    sup.paso(8.9, False, 0.0, enlace_ok=True, homing_ok=True, falla_actuador=False)
+    sup.paso(9.0, False, 0.0, enlace_ok=True, homing_ok=True, falla_actuador=False)
+    assert sup.estado == Estado.BUSQUEDA and not sup.rearmar(9.1)
+
+
+def test_mando_valida_y_ejecuta_en_el_lazo():
+    """pt/mando.py valida y encola; MandoEnVivo ejecuta: referencia manual, ganancias (simuladas) y grabación."""
+    import csv
+    import tempfile
+    import main as programa
+    from pt.control import ReferenciaVisual
+    from pt.enlace import EnlaceSimulado
+    from pt.mando import Mando, ACCIONES
+    from pt.registro import Grabacion, COLUMNAS
+    Pp = Parametros()
+    m = Mando(Pp.lazo.lim_pan_deg, Pp.lazo.lim_tilt_deg)
+    for malo in ({"accion": "apagar"}, {"accion": "ganancias", "eje": "pan", "kp": True, "ki": 1},
+                 {"accion": "ganancias", "eje": "x", "kp": 1, "ki": 1}, {"accion": "ganancias", "eje": "pan", "kp": 1e9, "ki": 1},
+                 {"accion": "referencia", "pan": 61.0, "tilt": 0}, {"accion": "referencia", "pan": float("nan"), "tilt": 0},
+                 {"accion": "grabar", "etiqueta": "../x"}, {"accion": "habilitar", "de_mas": 1}, "habilitar", None):
+        assert not m.pedir(malo)[0], malo
+    assert m.pendientes() == [] and {"habilitar", "deshabilitar", "rearmar", "cero", "ganancias", "referencia", "grabar"} <= set(ACCIONES)
+    assert {"kp_pan", "ki_pan", "kp_tilt", "ki_tilt", "manual", "experimento"} <= set(COLUMNAS)
+
+    enl = EnlaceSimulado(Pp)
+    enl.avanzar_hasta(1_000_000_000)
+    sup = Supervisor(Pp.supervisor)
+    sup.estado = Estado.SEGUIMIENTO
+    ref = ReferenciaVisual(Pp, Geometria.desde_parametros(Pp))
+    ref.ref_retencion = (40.0, 20.0)                         # referencia vieja del seguimiento
+    det = DetectorLaser(Pp.deteccion)
+    with tempfile.TemporaryDirectory() as d:
+        grab = Grabacion(d)
+        vivo = programa.MandoEnVivo(m, enl, sup, ref, grab)
+        vivo.archivos = {}
+        for pedido in ({"accion": "ganancias", "eje": "tilt", "kp": 20, "ki": 100}, {"accion": "referencia", "pan": 10, "tilt": -5},
+                       {"accion": "grabar", "etiqueta": "B_con_ff"}, {"accion": "estado"}):
+            assert m.pedir(pedido, "prueba")[0]
+        vivo.aplicar(det, 1.0)
+        assert vivo.manual == (10.0, -5.0) and enl.ganancias["tilt"] == (20.0, 100.0) and grab.activa
+        est = vivo.estado()
+        assert est["manual"] == [10.0, -5.0] and est["motores"] and est["grab"]["etiqueta"] == "B_con_ff" and len(est["hist"]) == 4
+        assert "no hay ESP32" in est["hist"][-1][2]             # la consola no existe en el enlace simulado: se dice
+        grab.fila(k=1, kp_tilt=20.0, manual=1, experimento=grab.etiqueta)
+        m.pedir({"accion": "detener_grabacion"})
+        m.pedir({"accion": "seguimiento"})
+        vivo.aplicar(det, 2.0)
+        assert vivo.manual is None and sup.estado == Estado.BUSQUEDA and not grab.activa
+        (nombre, ruta, filas, etq), = grab.hechas
+        assert nombre.startswith("exp_B_con_ff_") and filas == 1 and nombre in vivo.archivos
+        with open(ruta, newline="") as f:
+            fila, = list(csv.DictReader(f))
+        assert fila["experimento"] == "B_con_ff" and fila["manual"] == "1" and float(fila["kp_tilt"]) == 20.0
+        #* Habilitar parte reteniendo donde está la plataforma, no en la referencia vieja.
+        enl.habilitar = lambda: (True, "ok")
+        m.pedir({"accion": "habilitar"})
+        vivo.aplicar(det, 3.0)
+        assert ref.ref_retencion is None
+
+
+def test_main_por_defecto_segun_el_equipo():
+    """'python3 main.py' a secas: en la RPi, cámara + ESP32 + tablero sin fin; en el PC, sintética sin actuadores."""
+    import argparse
+    import importlib.util
+    import main as programa
+    base = dict(fuente=None, enlace=None, duracion=None, monitor=False, sin_monitor=False)
+    real = importlib.util.find_spec
+    try:
+        importlib.util.find_spec = lambda nombre, *a, **k: None if nombre == "picamera2" else real(nombre, *a, **k)
+        a = programa.resolver_por_defecto(argparse.Namespace(**base))
+        assert (a.fuente, a.enlace, a.duracion, a.monitor) == ("sintetica", "nulo", 10.0, False)
+        importlib.util.find_spec = lambda nombre, *a, **k: object() if nombre == "picamera2" else real(nombre, *a, **k)
+        a = programa.resolver_por_defecto(argparse.Namespace(**base))
+        assert (a.fuente, a.enlace, a.duracion, a.monitor, a.enlace_pedido) == ("camara", "trama", 0.0, True, None)
+        a = programa.resolver_por_defecto(argparse.Namespace(**{**base, "sin_monitor": True, "duracion": 20.0, "enlace": "nulo"}))
+        assert (a.fuente, a.enlace, a.duracion, a.monitor) == ("camara", "nulo", 20.0, False)
+        a = programa.resolver_por_defecto(argparse.Namespace(**{**base, "enlace": "simulado"}))
+        assert (a.fuente, a.enlace) == ("sintetica", "simulado")   # las herramientas de simulación siguen igual en la RPi
+    finally:
+        importlib.util.find_spec = real
+
+
 if __name__ == "__main__":
     fallas = 0
     for nombre, f in list(globals().items()):

@@ -172,6 +172,8 @@ class Supervisor:
     t_perdida_s: float = 0.3      # sin detección válida -> PÉRDIDA
     t_reintento_s: float = 2.0    # en PÉRDIDA sin reaparición -> BÚSQUEDA
     conf_min: float = 0.2         # confianza de EP-5 bajo este valor -> PÉRDIDA
+    t_rearme_auto_s: float = 1.0  # MODO_SEGURO con motores cortados: enlace sano este tiempo -> rearme solo
+    t_gracia_rearme_s: float = 0.3  # tras un rearme, plazo para que el ESP32 informe su estado nuevo
 
 
 # ---------------------------------------------------------------------------
