@@ -14,7 +14,7 @@ El mismo código corre en el PC con una cámara simulada y un ESP32 simulado, en
 |---|---|---|
 | `pt/parametros.py` | PI-7 y todos | Todos los números con unidades. Ya actualizado a las decisiones del 25 % (80 fps, exposición 2 ms, RLS orden 3 con λ = 0,80) |
 | `pt/camara.py` | PI-1 | `FuenteCamara`: planos Y y V, balance de blancos fijo. `FuenteSintetica`: láser rojo, lámpara blanca opcional y escena que responde a la pose simulada |
-| `pt/deteccion.py` | PI-2 a PI-6 | `DetectorForma` (avión y objeto circular por FORMA, plano Y), `DetectorLaserRojo` (plano V con confirmación en Y, traído de `laser_op.py`), `DetectorLuz` y `DetectorLaser` (brillo, el original) |
+| `pt/deteccion.py` | PI-2 a PI-6 | `DetectorForma` (avión y objeto circular por FORMA, plano Y), `DetectorLaserRojo` (plano V con confirmación en Y, traído de `laser_op.py`), `DetectorLuz`, `DetectorLaser` (brillo, el original) y `DetectorAvionRojo` (avión por color, `avion_rojo`) |
 | `pt/formas.py` | PI-3 / PI-6 | Descriptores de Fourier del contorno, normalización afín y banco de plantillas (incorporadas y aprendidas en `formas.json`) |
 | `pt/geometria.py` | CS-1 | Píxel → ángulo, y **dirección del objetivo en el mundo** con la pose actual (composición exacta de rotaciones) |
 | `pt/prediccion.py` | EP-1 a EP-5 | Gating conjunto de pan y tilt, reinicio informado (sin pasar por PÉRDIDA), RLS del equipo (`pt/rls_predictor.py`, sin cambios), predicción y velocidad al instante de aplicación |
@@ -79,7 +79,7 @@ No usar `/dev/serial0`: en la RPi 5 apunta al conector de depuración (`ttyAMA10
 - `--detector rojo` es el láser rojo, por color.
 - `--detector luz` es el flash del celular. Viene de `mi_proyecto_camara/luz_2.py`. Ninguna otra luz blanca intensa puede quedar en el cuadro.
 - `--detector brillo` es el original.
-- `--detector avion` es el avión **por forma** (silueta en el plano Y, sin usar el color); `ovni` es lo mismo para un objeto circular. El detector del avión por color se retiró el 18-11. Ver la sección 5.
+- `--detector avion` es el avión **por forma** (silueta en el plano Y, sin usar el color); `ovni` es lo mismo para un objeto circular. `avion_rojo` es el avión **por color** (plano V), retirado el 18-11 y restituido el 19-11 como opción aparte. Ver la sección 5.
 
 Antes de medir: `vcgencmd get_throttled` debe dar `0x0`. Dependencias: `sudo apt install -y python3-serial python3-opencv python3-matplotlib`.
 
@@ -139,7 +139,7 @@ python3 main.py --fuente camara --enlace trama --habilitar --duracion 0 --monito
 | Grupo | Qué se puede cambiar | Efecto en el lazo |
 |---|---|---|
 | Cámara | exposición, ganancia analógica, ganancias de color (rojo, azul) | `set_controls` de Picamera2; la cámara lo toma unos cuadros después. El tablero muestra lo que la cámara informa |
-| Objetivo | detector: `rojo`, `luz`, `avion`, `ovni`, `brillo` | detector y estimador parten de cero y el supervisor vuelve a BÚSQUEDA; la plataforma **retiene** hasta adquirir el objetivo nuevo |
+| Objetivo | detector: `rojo`, `luz`, `avion`, `ovni`, `avion_rojo`, `brillo` | detector y estimador parten de cero y el supervisor vuelve a BÚSQUEDA; la plataforma **retiene** hasta adquirir el objetivo nuevo |
 | Detector | umbrales del detector activo (en `avion` y `ovni`: polaridad, contraste, parecido exigido, ancho máximo, área mínima, alargamiento, borde, quitar lo delgado, rechazo de saltos) | inmediato, sin interrumpir el seguimiento |
 | Recorte de imagen | zona de trabajo (cuadrilátero) para todos los detectores | inmediato; apagado por defecto (sección 6) |
 | Predicción | λ (0,60 a 0,99), piso del gating, orden del RLS, feedforward ω_ff | λ, gating y ω_ff sin interrupción; cambiar el orden reinicia el estimador |

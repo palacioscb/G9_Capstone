@@ -515,7 +515,9 @@ def test_ajustes_en_vivo_cambio_de_objetivo():
     assert {"exposicion_us": 4000} in cam.pedidos and {"ganancias_color": (2.4, Pp.captura.ganancias_color[1])} in cam.pedidos
     assert aj.valores["lam"] == 0.9 and aj.valores["exposicion_us"] == 4000
 
-    assert "avion_rojo" not in programa.DETECTORES and aj.pedir({"detector": "avion_rojo"})[1]   # retirado el 18-11
+    aj.pedir({"detector": "avion_rojo", "avion_rojo.min_pix": 12})           # avión por color (restituido 19-11)
+    det = vivo.aplicar(det, 1.5)
+    assert det is dets["avion_rojo"] and Pp.deteccion_avion.min_pix == 12
     aj.pedir({"detector": "avion", "avion.contraste_min": 40, "avion.polaridad": "claro"})
     det = vivo.aplicar(det, 2.0)
     assert det is dets["avion"] and a.detector == "avion" and det.p is Pp.forma_avion
@@ -916,6 +918,26 @@ def test_perfil_al_partir_respeta_la_linea_de_comandos():
     nombre, excluir = programa.perfil_de_inicio(argparse.Namespace(detector="avion", exposicion=4000, ganancia=None), Pp)
     assert excluir == ("exposicion_us",) and Pp.captura.exposicion_us == 4000 and Pp.captura.ganancia == perfil["ganancia"]
     assert programa.perfil_de_inicio(argparse.Namespace(detector="brillo", exposicion=None, ganancia=None), Parametros())[0] is None
+
+
+
+def test_detector_avion_rojo():
+    from pt.deteccion import DetectorAvionRojo
+    det = DetectorAvionRojo(Parametros())
+    v = np.full((240, 320), 128, dtype=np.uint8)
+    v[118:123, 158:163] = 220                    # mancha roja de 5x5 en el plano V (media resolución)
+    r = det.procesar(None, usar_ventana=False, v=v)
+    assert r.valido and abs(r.u - 320) < 1.5 and abs(r.w - 240) < 1.5   # centro en el cuadro completo
+    assert not det.procesar(None, usar_ventana=False, v=np.full((240, 320), 128, np.uint8)).valido
+    #* Su perfil existe, se encuentra por el nombre del detector y todos sus valores pasan la validación.
+    import argparse
+    import main as programa
+    from pt.ajustes import Ajustes, perfil_de
+    from pt.parametros import PERFILES
+    aj = Ajustes(programa.lista_de_ajustes(argparse.Namespace(detector="rojo"), Parametros(), con_camara=True), PERFILES)
+    assert perfil_de(aj.perfiles, "avion_rojo") == "avion_rojo"
+    assert all(c in aj.specs and aj.validar(c, v)[0] for c, v in PERFILES["avion_rojo"].items())
+    assert perfil_de(aj.perfiles, "avion") == "avion"                     # el del avión por forma no cambia
 
 
 if __name__ == "__main__":

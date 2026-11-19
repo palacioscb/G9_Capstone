@@ -61,6 +61,18 @@ class Deteccion:
 
 
 @dataclass
+class DeteccionAvion:
+    v_umbral: int = 170          # Umbral fijo de seguridad
+    min_pix: int = 3             # Píxeles mínimos en el plano V
+    roi_r: int = 20
+    b_global: int = 4
+    bloque_ventana: int = 2
+    bloque_global: int = 8
+    ventana_seguimiento: int = 80
+    salto_max_px: float = 80.0
+
+
+@dataclass
 class DeteccionForma:
     #* Detector por FORMA (plano Y): silueta por contraste local + descriptores de Fourier.
     #* Una instancia por objetivo: el avión y el objeto circular (ver Parametros).
@@ -233,6 +245,12 @@ PERFILES = {
     #? Objeto no identificado: se busca una figura circular (un disco inclinado se ve como
     #? elipse y también se acepta). Exposición de partida, igual a la del avión.
     "ovni": {"detector": "ovni", "exposicion_us": 6000, "ganancia": 2.0},
+    #* Avión por COLOR (restituido el 19-11-2026). Cámara de las corridas de lazo cerrado del equipo
+    #* con el detector por color (--exposicion 6000 --ganancia 2.0). Ganancias de color, λ y piso
+    #* del gating en sus valores por defecto, para deshacer lo que deje el perfil del avión por forma.
+    "avion_rojo": {"detector": "avion_rojo", "exposicion_us": 6000, "ganancia": 2.0, "color_rojo": 2.0,
+                   "color_azul": 1.5, "avion_rojo.v_umbral": 170, "avion_rojo.min_pix": 3,
+                   "avion_rojo.salto_activo": True, "lam": 0.80, "sigma_min_deg": 0.1},
 }
 
 
@@ -246,6 +264,7 @@ class Parametros:
     prediccion: Prediccion = field(default_factory=Prediccion)
     supervisor: Supervisor = field(default_factory=Supervisor)
     lazo: LazoExterno = field(default_factory=LazoExterno)
+    deteccion_avion: DeteccionAvion = field(default_factory=DeteccionAvion)   # avión por color (avion_rojo)
     actuador: Actuador = field(default_factory=Actuador)
     enlace: Enlace = field(default_factory=Enlace)
     #* Detectores por forma (18-11-2026). El círculo es una figura simple: se le exige más
